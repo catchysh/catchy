@@ -13,6 +13,7 @@ and API, ready for something else to process.
 - **Channels** — group hooks with `?channel=stripe`; channels appear on first use
 - **Raw capture** — method, query, headers, and the exact body (e.g. for signature checks), plus a decoded payload for JSON and forms
 - **Process outside** — consumers list pending hooks, handle them, and mark them `processed`, `failed`, or `discarded`
+- **Destinations** — send hooks over HTTP: email through Resend, Slack, Discord, or forward to any URL, with retries
 - **Guards** — honeypot, captchas (Cloudflare Turnstile, Google reCAPTCHA), webhook signatures (GitHub, Shopify, Stripe, HMAC), and tokens, attached per channel
 - **Forms too** — open CORS; your page shows its own thank-you
 - **API** — REST, gRPC, gRPC-Web, and Connect on one endpoint
@@ -29,7 +30,6 @@ Or download a binary from [Releases](https://github.com/catchysh/catchy/releases
 
 ```bash
 export SESSION_SECRET="your-secret-here"
-export ENCRYPTION_KEY="$(openssl rand -base64 32)"
 export GOOGLE_CLIENT_ID="your-client-id"
 export GOOGLE_CLIENT_SECRET="your-client-secret"
 
@@ -53,6 +53,11 @@ curl "https://catchy.example.com/?channel=signup" \
   -d '{"email":"jane@example.com"}'
 # {"id":"01k6z3x2b9e8v4m7q5w1t0r2y3"}
 ```
+
+The dashboard lists hooks a line each, newest first, filtered by channel and
+status. Each hook has its own page at its ID —
+`https://catchy.example.com/01k6z3x2b9e8v4m7q5w1t0r2y3` — with everything it
+carried, its deliveries, and its actions.
 
 Every hook is stored as received: method, query string, headers (except
 `Cookie`), content type, and the exact body, up to 1 MiB. Any content type is
@@ -112,9 +117,9 @@ panel; a hook must pass every guard on its channel.
 | Type | Checks | Secret |
 |---|---|---|
 | `honeypot` | A hidden form field (`_gotcha` by default; set your own, e.g. `_website`) is empty; bots that fill it get a normal response and are dropped | — |
-| `captcha` | A valid captcha token from the form's widget, with scheme `turnstile` or `recaptcha` (below) | the provider's secret key |
-| `signature` | A webhook signature over the raw body, with scheme `hmac` or `stripe` (below) | the signing secret |
-| `token` | A header holds the secret itself, after an optional prefix | the token |
+| `captcha` | A valid captcha token from the form's widget, with scheme `turnstile` or `recaptcha` (below) | the provider's secret key, e.g. `TURNSTILE_SECRET_KEY` |
+| `signature` | A webhook signature over the raw body, with scheme `hmac` or `stripe` (below) | the signing secret, e.g. `STRIPE_WEBHOOK_SECRET` |
+| `token` | A header holds the secret itself, after an optional prefix | the token, e.g. `API_TOKEN` |
 
 **`hmac` signatures** are configurable — header, algorithm (`sha256`, `sha1`,
 `sha512`), encoding (`hex`, `base64`), and a prefix before the value — so one
@@ -141,8 +146,10 @@ scheme covers most providers. The dashboard has presets:
 
 Guards have a name, so you can have several of a type (`stripe-prod`,
 `stripe-test`, a Turnstile guard per site) and reuse one across channels.
-Secrets are encrypted with `ENCRYPTION_KEY` and never shown again: only their
-last characters, to tell them apart. Rotate a secret from the Guards page.
+A guard's secret is picked from the [secrets](#secrets) that are set:
+`STRIPE_WEBHOOK_SECRET` is the `CATCHY_SECRET_STRIPE_WEBHOOK_SECRET`
+environment variable. Presets pick one, even before it's set. To rotate it,
+change the variable and restart.
 
 Every instance starts with a ready-made `honeypot` guard. Channels start
 without guards — including ones created by their first hook — so attach the
@@ -180,6 +187,101 @@ sent along and checked by Catchy:
 <div class="g-recaptcha" data-sitekey="YOUR_SITE_KEY"></div>
 <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 ```
+
+## Destinations
+
+**Destinations** are where a channel's hooks are sent. Create them on the
+dashboard's **Destinations** page, then check them on a channel's page. Every
+hook caught there is queued for each destination and sent in the background.
+
+A destination speaks a **protocol**; today that's `http`: a request to a URL
+with a method, optional headers, and an optional body template. An empty body
+forwards the hook as received. The URL, headers, and body are templates that
+can use [secrets](#secrets) by name: `Authorization: Bearer
+{{.Secrets.RESEND_API_KEY}}`, or a whole URL like
+`{{.Secrets.SLACK_WEBHOOK_URL}}` (Slack's and Discord's carry a token). **Sign
+with** picks a secret, like `WEBHOOK_SIGNING_SECRET`, and signs each request
+with it in `X-Catchy-Signature` (the format `hmac` guards check).
+
+Presets fill in the form:
+
+| Preset | Secrets | Sends |
+|---|---|---|
+| **Resend** | `RESEND_API_KEY` | `POST https://api.resend.com/emails` with a JSON email (edit from and to in the body); reply-to is the hook's `email` field when it has one |
+| **Slack** / **Discord** | `SLACK_WEBHOOK_URL` / `DISCORD_WEBHOOK_URL` | A message with the hook's fields to an incoming webhook |
+| **Webhook URL** | — | The hook as received |
+| **Signed webhook** | `WEBHOOK_SIGNING_SECRET` | The hook as received, signed |
+
+Placeholders are `{{.Channel}}`, `{{.Payload.email}}` (any field; nested
+ones with dots, like `{{.Payload.customer.email}}`, and a missing one is just
+empty), `{{.Text}}` (all fields), `{{.Body}}` (raw), `{{.URL}}` (the hook's
+page in the dashboard), `{{.Vars.NAME}}` (variables, below), and
+`{{.Secrets.NAME}}`. In a JSON body, put them inside strings and
+they're escaped for you, so quotes or newlines in a form never break it:
+
+```json
+{"text": "New hook in #{{.Channel}}\n\n{{.Text}}"}
+```
+
+`{{json .Payload}}` inserts the whole payload as a JSON object. Empty
+`reply_to`, `cc`, and `bcc` are left out of JSON bodies, so an email preset
+can use `"reply_to": "{{.Payload.email}}"` even for hooks without an email.
+The body is filled in with a sample hook when you save, so a broken template
+is caught right away. (Templates are Go templates, so `{{if}}`, `{{range}}`,
+and the rest work too.)
+
+**Variables** are environment variables named `CATCHY_VAR_NAME`, for values
+you'd rather set per deployment than write into templates: with
+`CATCHY_VAR_to=team@acme.dev`, `{{.Vars.to}}` is `team@acme.dev`. A missing
+one is empty, so `{{or .Vars.to "team@acme.dev"}}` gives a default. To vary a
+value by channel, use `{{if eq .Channel "sales"}}…{{end}}` or one destination
+per channel.
+
+Anything in the payload comes from whoever sends the hook, so `from`, `to`,
+`cc`, and `bcc` in a JSON body can't use it: a destination that took its
+recipient from the hook would send email anywhere for anyone. Saving one is
+refused; use fixed addresses or variables. `reply_to` and `subject` can use
+the payload.
+
+A failed delivery is retried after 10s, 40s, 90s, and 160s, then given up.
+When every delivery of a hook succeeds, the hook becomes `processed`; when one
+gives up, it becomes `failed` with the reason, and **retry** sends its failed
+deliveries again. Each hook shows its deliveries in the dashboard.
+
+## Secrets
+
+Secrets are environment variables named `CATCHY_SECRET_NAME`, usually set by
+a secret manager (AWS Secrets Manager, GCP Secret Manager, Vault, Doppler,
+1Password, Kubernetes secrets) or, locally, in `.env`. Catchy never stores
+them, and the dashboard never asks for a value: templates write
+`{{.Secrets.NAME}}`, and other fields pick a secret by name.
+
+| Where | How |
+|---|---|
+| Destination URL, headers, body | `{{.Secrets.RESEND_API_KEY}}` |
+| Destination signing | **Sign with** `WEBHOOK_SIGNING_SECRET` |
+| Guard | **Secret** `STRIPE_WEBHOOK_SECRET` |
+
+```bash
+CATCHY_SECRET_RESEND_API_KEY=re_…
+CATCHY_SECRET_STRIPE_WEBHOOK_SECRET=whsec_…
+```
+
+A guard or destination can use a secret before it's set, so you can set it
+up first and add the variable after. Until it's set — or if it's removed
+later — its guards refuse hooks and its deliveries fail, and Catchy says so:
+a warning in the log at startup, a banner on every dashboard page, and the
+secret marked in red where it's used. Set or change a secret, then restart
+Catchy.
+
+Only `CATCHY_SECRET_` and `CATCHY_VAR_` variables are read, so Catchy's own
+settings and other software's secrets in a shared environment stay out of
+reach. But anyone signed in to the dashboard can use the secrets — for
+instance by creating a destination that sends one to a URL of theirs — as in
+GitHub Actions, where anyone who can edit a workflow can use its secrets.
+Sign-in is limited by `ALLOWED_DOMAINS`; keep it to people you'd trust with
+them. Delivery errors mention a URL's host only, since the URL may hold a
+secret.
 
 ## Processing hooks
 
@@ -241,9 +343,10 @@ docker compose up
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID | required |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret | required |
 | `ALLOWED_DOMAINS` | Comma-separated list of allowed email domains | — (all allowed) |
-| `ENCRYPTION_KEY` | Key that encrypts guard secrets in the database, e.g. `openssl rand -base64 32`. Keep it safe: without it, stored secrets can't be read | required |
 | `AUTO_CREATE_CHANNELS` | Let a hook to an unknown channel create it; `false` answers such hooks with `404` | `true` |
 | `TRUST_PROXY` | Take the sender's IP from `X-Forwarded-For` (`true` only behind a proxy that sets it) | — |
+| `CATCHY_VAR_*` | Variables for destination templates, as `{{.Vars.NAME}}` | — |
+| `CATCHY_SECRET_*` | [Secrets](#secrets) for destinations and guards, used by name: `CATCHY_SECRET_RESEND_API_KEY` is `RESEND_API_KEY` | — |
 
 ## Database
 

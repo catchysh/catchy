@@ -14,6 +14,7 @@ import (
 
 	"github.com/catchysh/catchy/internal/auth"
 	"github.com/catchysh/catchy/internal/db"
+	envvars "github.com/catchysh/catchy/internal/env"
 	"github.com/catchysh/catchy/internal/guard"
 )
 
@@ -33,8 +34,8 @@ func newTestServer(t *testing.T) (*db.DB, *httptest.Server) {
 	mux, err := newMux(database, config{
 		hostname:      "http://" + srv.Listener.Addr().String(),
 		sessionSecret: "test",
-		encryptionKey: "test-key",
 		autoCreate:    true,
+		env:           envvars.Env{Secrets: map[string]string{"HMAC_SECRET": "hmac-secret", "JOBS_KEY": "super-secret-value"}},
 	})
 	if err != nil {
 		t.Fatalf("newMux: %v", err)
@@ -202,7 +203,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// Guards are set up in the dashboard; the API shows them on the channel.
-	if _, err := database.CreateGuard(t.Context(), db.Guard{Name: "signer", Type: guard.Signature, Scheme: guard.HMAC, Secret: "hmac-secret",
+	if _, err := database.CreateGuard(t.Context(), db.Guard{Name: "signer", Type: guard.Signature, Scheme: guard.HMAC, Secret: "HMAC_SECRET",
 		Options: `{"header":"X-Catchy-Signature","algorithm":"sha256","encoding":"hex","prefix":"sha256="}`}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,11 +308,36 @@ func TestDashboard(t *testing.T) {
 	call(t, srv, "POST", "/?channel=newsletter", "", "application/x-www-form-urlencoded", "email=bob%40example.com", nil)
 	call(t, srv, "POST", "/?channel=raw", "", "application/xml", "<event>ping</event>", nil)
 
+	// The list shows a line per hook, linking to its page at /{id}.
+	contact, _ := database.ListHooks(t.Context(), db.HookFilter{Channel: "contact"}, 1)
 	code, body = page("GET", "/", "")
-	if code != 200 || !strings.Contains(body, "jane@example.com") || !strings.Contains(body, "bob@example.com") ||
-		!strings.Contains(body, "Hello &lt;b&gt;there&lt;/b&gt;") || !strings.Contains(body, "&lt;event&gt;ping&lt;/event&gt;") ||
-		!strings.Contains(body, `href="/?channel=newsletter"`) || !strings.Contains(body, "Mark processed") {
+	if code != 200 || !strings.Contains(body, "jane@example.com · Hello &lt;b&gt;there&lt;/b&gt;") || !strings.Contains(body, "bob@example.com") ||
+		!strings.Contains(body, "&lt;event&gt;ping&lt;/event&gt;") || !strings.Contains(body, "#newsletter</td>") ||
+		!strings.Contains(body, `href="/`+contact[0].ID+`"`) || strings.Contains(body, "Mark processed") {
 		t.Fatalf("hooks page: %d\n%s", code, body)
+	}
+
+	// A hook's page has everything, with actions and links back to its list.
+	code, body = page("GET", "/"+contact[0].ID+"?channel=contact", "")
+	if code != 200 || !strings.Contains(body, "Hello &lt;b&gt;there&lt;/b&gt;") || !strings.Contains(body, "Mark processed") ||
+		!strings.Contains(body, "Raw request") || !strings.Contains(body, `href="/?channel=contact"`) || !strings.Contains(body, "· #contact") {
+		t.Fatalf("hook page: %d\n%s", code, body)
+	}
+	for _, path := range []string{"/01zzzzzzzzzzzzzzzzzzzzzzzz", "/not-a-hook", "/favicon.ico"} {
+		if code, _ := page("GET", path, ""); code != 404 {
+			t.Fatalf("GET %s: %d, want 404", path, code)
+		}
+	}
+
+	// Newer and older step through the list it was opened from.
+	all, _ := database.ListHooks(t.Context(), db.HookFilter{}, 10) // raw, newsletter, contact
+	_, body = page("GET", "/"+all[1].ID, "")
+	if !strings.Contains(body, `href="/`+all[0].ID+`" rel="prev"`) || !strings.Contains(body, `href="/`+all[2].ID+`" rel="next"`) {
+		t.Fatalf("neighbors of the middle hook:\n%s", body)
+	}
+	_, body = page("GET", "/"+contact[0].ID+"?channel=contact", "")
+	if strings.Contains(body, `rel="prev"`) || strings.Contains(body, `rel="next"`) {
+		t.Fatalf("the only #contact hook has neighbors:\n%s", body)
 	}
 
 	// The hooks feed filtered to one channel.
@@ -351,8 +377,11 @@ func TestDashboard(t *testing.T) {
 	contactHooks, _ := database.ListHooks(t.Context(), db.HookFilter{Channel: "contact"}, 10)
 	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusFailed, "smtp <refused>")
 	code, body = page("GET", "/?status=failed", "")
-	if code != 200 || !strings.Contains(body, "smtp &lt;refused&gt;") || !strings.Contains(body, "Retry") {
+	if code != 200 || !strings.Contains(body, "smtp &lt;refused&gt;") {
 		t.Fatalf("failed filter: %d\n%s", code, body)
+	}
+	if _, body := page("GET", "/"+contactHooks[0].ID, ""); !strings.Contains(body, "smtp &lt;refused&gt;") || !strings.Contains(body, ">Retry</button>") {
+		t.Fatalf("failed hook page:\n%s", body)
 	}
 	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusPending, "")
 
@@ -374,10 +403,27 @@ func TestDashboard(t *testing.T) {
 	}
 
 	// Create a guard on the Guards page, then attach it to a new channel.
-	code, body = page("POST", "/guards", "name=jobs-key&type=signature&scheme=hmac&header=X-Catchy-Signature&algorithm=sha256&encoding=hex&prefix=sha256%3D&secret=super-secret-value")
+	code, body = page("POST", "/guards", "name=jobs-key&type=signature&scheme=hmac&header=X-Catchy-Signature&algorithm=sha256&encoding=hex&prefix=sha256%3D&secret=JOBS_KEY")
 	if code != 200 || !strings.Contains(body, "jobs-key") || !strings.Contains(body, "signature · hmac · X-Catchy-Signature · sha256 hex") ||
-		!strings.Contains(body, "…alue") || strings.Contains(body, "super-secret-value") {
+		!strings.Contains(body, ">JOBS_KEY</code>") || strings.Contains(body, "super-secret-value") {
 		t.Fatalf("guards page after create: %d\n%s", code, body)
+	}
+	if code, body := page("POST", "/guards", "name=bad&type=signature&scheme=hmac&secret=%7B%7B.Secrets.JOBS_KEY%7D%7D"); code != 422 || !strings.Contains(body, "Secret names are") {
+		t.Fatalf("guard with a bad secret name: %d\n%s", code, body)
+	}
+
+	// A guard can use a secret that isn't set yet; every page then says so.
+	code, body = page("POST", "/guards", "name=unset&type=signature&scheme=hmac&secret=NOPE")
+	if code != 200 || !strings.Contains(body, "Not set: add CATCHY_SECRET_NOPE") || !strings.Contains(body, "1 secret is used but not set") ||
+		!strings.Contains(body, "(guard unset)") {
+		t.Fatalf("guard with an unset secret: %d\n%s", code, body)
+	}
+	if _, body := page("GET", "/channels", ""); !strings.Contains(body, "add <code>CATCHY_SECRET_NOPE</code>") {
+		t.Fatalf("no banner on another page:\n%s", body)
+	}
+	page("POST", "/guards/unset/delete", "")
+	if _, body := page("GET", "/channels", ""); strings.Contains(body, "used but not set") {
+		t.Fatalf("banner after deleting the guard:\n%s", body)
 	}
 	if code, body := page("POST", "/guards", "name=bad&type=signature&scheme=hmac"); !strings.Contains(body, "needs the signing secret") {
 		t.Fatalf("guard without secret: %d\n%s", code, body)
@@ -395,11 +441,7 @@ func TestDashboard(t *testing.T) {
 		t.Fatalf("HMAC curl snippet missing: %d\n%s", code, body)
 	}
 
-	// Rotate, try to delete while attached, detach, delete.
-	page("POST", "/guards/jobs-key/secret", "secret=rotated-secret-1234")
-	if g, _ := database.GetGuard(t.Context(), "jobs-key"); g.SecretHint != "…1234" {
-		t.Fatalf("hint after rotate = %q", g.SecretHint)
-	}
+	// Try to delete while attached, detach, delete.
 	if _, body := page("POST", "/guards/jobs-key/delete", ""); !strings.Contains(body, "Detach jobs-key") {
 		t.Fatalf("deleting an attached guard: %s", body)
 	}

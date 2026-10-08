@@ -43,7 +43,10 @@
       </div>
       <div>
         <label for="guard-secret" class="block text-xs font-medium text-gray-700 mb-1">Secret</label>
-        <input id="guard-secret" type="password" name="secret" required autocomplete="off" placeholder="Secret or token" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+        <select id="guard-secret" name="secret" data-secret-select required class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono data-[unset]:border-red-300 data-[unset]:text-red-700">
+          <option value="">{{if .Env.SecretNames}}Choose a secret{{else}}No secrets yet{{end}}</option>
+          {{template "secretOptions" (secretOptions .Env .Form.Secret)}}
+        </select>
       </div>
     </div>
     <!-- Settings keep one row's height whatever the type, so changing it
@@ -80,8 +83,9 @@
       </div>
       <p class="sm:col-span-4 self-center text-sm text-gray-400" id="guard-no-settings" hidden>No extra settings for this type.</p>
     </div>
-    <div class="mt-4 flex justify-end">
-      <button type="submit" class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Create guard</button>
+    <div class="mt-4 flex items-center justify-between gap-3">
+      <p class="text-xs text-red-700" data-secret-hint hidden></p><span></span>
+      <button type="submit" class="shrink-0 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Create guard</button>
     </div>
   </form>
 </div>
@@ -107,16 +111,8 @@
           </td>
           <td class="px-6 py-3 text-gray-600 whitespace-nowrap">{{.Kind}}</td>
           <td class="px-6 py-3">
-            {{if .NeedsKey}}
-            <code class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-xs border border-gray-200">{{.SecretHint}}</code>
-            <details class="mt-1">
-              <summary class="text-xs text-gray-500 hover:text-gray-900 cursor-pointer">Rotate</summary>
-              <form method="POST" action="/guards/{{.Name}}/secret" class="mt-2 flex gap-2">
-                <input type="password" name="secret" required autocomplete="off" placeholder="New secret" aria-label="New secret for {{.Name}}"
-                  class="min-w-0 flex-1 rounded-md border border-gray-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500">
-                <button type="submit" class="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">Save</button>
-              </form>
-            </details>
+            {{if .Secret}}
+            <code class="px-1.5 py-0.5 rounded text-xs border {{if .SecretSet}}bg-gray-100 text-gray-600 border-gray-200{{else}}bg-red-50 text-red-700 border-red-200" title="Not set: add CATCHY_SECRET_{{.Secret}} to the environment{{end}}">{{.Secret}}</code>
             {{else}}<span class="text-gray-400">—</span>{{end}}
           </td>
           <td class="px-6 py-3">
@@ -156,7 +152,7 @@
         {{range .Presets}}
         <button type="button" data-preset="{{.Name}}" data-label="{{.Label}}" data-description="{{.Description}}"
           data-type="{{.Type}}" data-scheme="{{.Scheme}}" data-field="{{.Options.Field}}" data-header="{{.Options.Header}}" data-algorithm="{{.Options.Algorithm}}"
-          data-encoding="{{.Options.Encoding}}" data-prefix="{{.Options.Prefix}}" data-min-score="{{if .Options.MinScore}}{{.Options.MinScore}}{{end}}"
+          data-encoding="{{.Options.Encoding}}" data-prefix="{{.Options.Prefix}}" data-min-score="{{if .Options.MinScore}}{{.Options.MinScore}}{{end}}" data-secret="{{.Secret}}"
           class="text-left rounded-lg border border-gray-200 px-4 py-3 hover:border-brand-300 hover:bg-brand-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
           <span class="block text-sm font-medium text-gray-900">{{.Label}}</span>
           <span class="block mt-0.5 text-xs text-gray-500">{{.Description}}</span>
@@ -199,7 +195,7 @@
 
     const secret = field('secret');
     secret.disabled = type === 'honeypot';
-    secret.placeholder = secret.disabled ? 'No secret needed' : 'Secret or token';
+    if (secret.disabled) selectSecret(secret, '');
 
     const n = needs(type, scheme.value);
     let shown = 0;
@@ -229,6 +225,7 @@
     field('algorithm').value = o.algorithm || 'sha256';
     field('encoding').value = o.encoding || 'hex';
     field('min-score').value = o.minScore;
+    selectSecret(field('secret'), o.secret);
     sync();
     note.textContent = o.label + ': ' + o.description;
     presets.close();

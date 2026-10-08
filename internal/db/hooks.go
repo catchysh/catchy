@@ -49,6 +49,16 @@ func NewID() string {
 	return strings.ToLower(ulid.Make().String())
 }
 
+// ValidID reports whether id looks like a hook ID: 26 lowercase Crockford
+// base32 characters.
+func ValidID(id string) bool {
+	if len(id) != ulid.EncodedSize {
+		return false
+	}
+	_, err := ulid.ParseStrict(strings.ToUpper(id))
+	return err == nil
+}
+
 // Hook is one request caught by a channel, stored as received.
 type Hook struct {
 	ID          string
@@ -255,8 +265,14 @@ func (d *DB) DeleteChannel(ctx context.Context, name string) error {
 	defer tx.Rollback()
 	// Hooks go explicitly: SQLite only enforces ON DELETE CASCADE when
 	// foreign keys are enabled on the connection.
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM deliveries WHERE hook_id IN (SELECT id FROM hooks WHERE channel = ?)`), name); err != nil {
+		return fmt.Errorf("deleting deliveries: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM hooks WHERE channel = ?`), name); err != nil {
 		return fmt.Errorf("deleting hooks: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM channels_destinations WHERE channel = ?`), name); err != nil {
+		return fmt.Errorf("detaching destinations: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM channels_guards WHERE channel = ?`), name); err != nil {
 		return fmt.Errorf("detaching guards: %w", err)
@@ -345,9 +361,11 @@ type HookFilter struct {
 	Channel string
 	Status  string
 	After   string // a hook ID; only older hooks match
+	Before  string // a hook ID; only newer hooks match, listed oldest first
 }
 
-// ListHooks returns up to limit hooks matching f, newest first.
+// ListHooks returns up to limit hooks matching f, newest first (oldest first
+// with Before).
 func (d *DB) ListHooks(ctx context.Context, f HookFilter, limit int) ([]Hook, error) {
 	query := `SELECT ` + hookColumns + ` FROM hooks WHERE 1 = 1`
 	var args []any
@@ -363,7 +381,13 @@ func (d *DB) ListHooks(ctx context.Context, f HookFilter, limit int) ([]Hook, er
 		query += ` AND id < ?`
 		args = append(args, f.After)
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
+	order := "DESC"
+	if f.Before != "" {
+		query += ` AND id > ?`
+		args = append(args, f.Before)
+		order = "ASC"
+	}
+	query += ` ORDER BY id ` + order + ` LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := d.sql.QueryContext(ctx, d.q(query), args...)
@@ -433,10 +457,19 @@ func (d *DB) SetHookStatus(ctx context.Context, id, status, message string) (*Ho
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("updating hook: %w", err)
 	}
+	// Retrying a hook sends its failed deliveries again.
+	if status == StatusPending {
+		if _, err := d.RetryDeliveries(ctx, id); err != nil {
+			return nil, err
+		}
+	}
 	return d.GetHook(ctx, id)
 }
 
 func (d *DB) DeleteHook(ctx context.Context, id string) error {
+	if _, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM deliveries WHERE hook_id = ?`), id); err != nil {
+		return fmt.Errorf("deleting deliveries: %w", err)
+	}
 	result, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM hooks WHERE id = ?`), id)
 	if err != nil {
 		return fmt.Errorf("deleting hook: %w", err)

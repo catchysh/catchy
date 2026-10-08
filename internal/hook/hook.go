@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/catchysh/catchy/internal/db"
+	"github.com/catchysh/catchy/internal/env"
 	"github.com/catchysh/catchy/internal/guard"
 )
 
@@ -28,10 +29,12 @@ type Handler struct {
 	// trustProxy takes the client IP from X-Forwarded-For. Enable it only
 	// behind a proxy that sets the header, since clients can forge it.
 	trustProxy bool
+	// env has the secrets guards check with, by name.
+	env env.Env
 }
 
-func NewHandler(database *db.DB, guards *guard.Checker, autoCreate, trustProxy bool) *Handler {
-	return &Handler{db: database, guards: guards, autoCreate: autoCreate, trustProxy: trustProxy}
+func NewHandler(database *db.DB, guards *guard.Checker, e env.Env, autoCreate, trustProxy bool) *Handler {
+	return &Handler{db: database, guards: guards, env: e, autoCreate: autoCreate, trustProxy: trustProxy}
 }
 
 // ServeHTTP handles POST / by storing a hook in the ?channel= channel
@@ -102,7 +105,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		specs[i] = guard.Spec{Name: g.Name, Type: g.Type, Scheme: g.Scheme, Secret: g.Secret, Options: opts}
+		var secret string
+		if g.Secret != "" {
+			secret, err = h.env.Secret(g.Secret)
+		}
+		if err != nil {
+			log.Printf("hook: guard %s: %v", g.Name, err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		specs[i] = guard.Spec{Name: g.Name, Type: g.Type, Scheme: g.Scheme, Secret: secret, Options: opts}
 	}
 	err = h.guards.Check(r.Context(), specs, guard.Hook{
 		Header:      r.Header,
@@ -139,6 +151,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("hook: %v", err)
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	// The hook is stored; if queueing deliveries fails it can be retried.
+	if _, err := h.db.EnqueueDeliveries(r.Context(), hook.ID, channel); err != nil {
+		log.Printf("hook %s: queueing deliveries: %v", hook.ID, err)
 	}
 	respondOK(w, hook.ID)
 }

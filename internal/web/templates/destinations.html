@@ -1,0 +1,181 @@
+{{define "content"}}
+<div class="mb-8">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Destinations</h2>
+</div>
+
+{{if and .Error (not .Form.Restore)}}
+<p class="mb-6 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{.Error}}</p>
+{{end}}
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+  <div class="flex items-start justify-between gap-4 mb-4">
+    <div>
+      <h3 class="text-sm font-semibold text-gray-900">Create destination</h3>
+      <p class="mt-0.5 text-xs text-gray-500" id="preset-note">Where a channel's hooks are sent. Set it up below, or start from a preset.</p>
+    </div>
+    <button type="button" data-dialog-open="presets" class="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
+      <svg aria-hidden="true" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" /></svg>
+      Presets
+    </button>
+  </div>
+  {{if .Form.Restore}}{{with .Error}}
+  <p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{.}}</p>
+  {{end}}{{end}}
+  <form method="POST" action="/destinations" id="dst-form">
+    <input type="hidden" name="preset" id="dst-preset" value="{{.Form.Preset}}">
+    <div class="grid gap-3 sm:grid-cols-4">
+      <div>
+        <label for="dst-name" class="block text-xs font-medium text-gray-700 mb-1">Name</label>
+        <input id="dst-name" type="text" name="name" value="{{.Form.Name}}" placeholder="team-email" required maxlength="64" pattern="[a-z0-9]+([_\-][a-z0-9]+)*" autocomplete="off" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+      </div>
+      <div>
+        <label for="dst-protocol" class="block text-xs font-medium text-gray-700 mb-1">Protocol</label>
+        <select id="dst-protocol" name="protocol" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          {{range .Protocols}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="sm:col-span-2">
+        <label for="dst-url" class="block text-xs font-medium text-gray-700 mb-1">URL</label>
+        <input id="dst-url" type="text" name="url" value="{{.Form.URL}}" required autocomplete="off" spellcheck="false" placeholder="https://example.com/hooks" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div>
+        <label for="dst-method" class="block text-xs font-medium text-gray-700 mb-1">Method</label>
+        <select id="dst-method" name="method" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          <option>POST</option><option>PUT</option><option>PATCH</option>
+        </select>
+      </div>
+      <div>
+        <label for="dst-content-type" class="block text-xs font-medium text-gray-700 mb-1">Content type <span class="font-normal text-gray-400">(with a body)</span></label>
+        <input id="dst-content-type" type="text" name="content_type" value="{{.Form.ContentType}}" placeholder="application/json" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div class="sm:col-span-2">
+        <label for="dst-sign-with" class="block text-xs font-medium text-gray-700 mb-1">Sign with <span class="font-normal text-gray-400">(optional; X-Catchy-Signature)</span></label>
+        <select id="dst-sign-with" name="sign_with" data-secret-select class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono data-[unset]:border-red-300 data-[unset]:text-red-700">
+          <option value="">No signing</option>
+          {{template "secretOptions" (secretOptions .Env .Form.SignWith)}}
+        </select>
+      </div>
+      <div class="sm:col-span-4">
+        <label for="dst-headers" class="block text-xs font-medium text-gray-700 mb-1">Headers <span class="font-normal text-gray-400">(optional; one "Name: value" per line)</span></label>
+        <textarea id="dst-headers" name="headers" rows="2" spellcheck="false" placeholder="Authorization: Bearer {{"{{.Secrets.API_KEY}}"}}" data-highlight>{{.Form.Headers}}</textarea>
+      </div>
+      <div class="sm:col-span-4">
+        <div class="mb-1 flex items-center justify-between gap-2">
+          <label for="dst-body" class="block text-xs font-medium text-gray-700">Body <span class="font-normal text-gray-400">(optional; empty forwards the hook as received)</span></label>
+          {{template "placeholders" .Env}}
+        </div>
+        <textarea id="dst-body" name="body" rows="7" spellcheck="false" data-highlight>{{.Form.Body}}</textarea>
+      </div>
+    </div>
+    <div class="mt-4 flex items-center justify-between gap-3">
+      <p class="text-xs text-red-700" data-secret-hint hidden></p><span></span>
+      <button type="submit" class="shrink-0 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Create destination</button>
+    </div>
+  </form>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+  {{if .Destinations}}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm">
+      <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
+        <tr>
+          <th class="px-6 py-4">Name</th>
+          <th class="px-6 py-4">Type</th>
+          <th class="px-6 py-4">Secrets</th>
+          <th class="px-6 py-4">Channels</th>
+          <th class="px-6 py-4"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        {{range .Destinations}}
+        <tr class="align-top">
+          <td class="px-6 py-3 whitespace-nowrap font-medium text-gray-900">{{.Name}}</td>
+          <td class="px-6 py-3 text-gray-600">{{.Kind}}</td>
+          <td class="px-6 py-3">{{$missing := .Missing}}{{range .Secrets}}<code class="mr-1 inline-block px-1.5 py-0.5 rounded text-xs border {{if has $missing .}}bg-red-50 text-red-700 border-red-200" title="Not set: add CATCHY_SECRET_{{.}} to the environment{{else}}bg-gray-100 text-gray-600 border-gray-200{{end}}">{{.}}</code>{{else}}<span class="text-gray-400">—</span>{{end}}</td>
+          <td class="px-6 py-3">
+            {{range .Channels}}<a href="/channels/{{.}}" class="mr-1 inline-block rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-xs hover:bg-gray-200">#{{.}}</a>{{else}}<span class="text-gray-400">—</span>{{end}}
+          </td>
+          <td class="px-6 py-3 text-right whitespace-nowrap">
+            <form method="POST" action="/destinations/{{.Name}}/delete" class="inline" onsubmit="return confirm('Delete destination {{.Name}}?')">
+              <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-md px-2 py-1" {{if .Channels}}disabled title="Detach it from its channels first" style="opacity:.5;cursor:not-allowed"{{end}}>Delete</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="px-6 py-12 text-center text-gray-500"><p>No destinations yet. Create one above, then attach it to channels.</p></div>
+  {{end}}
+</div>
+
+<dialog id="presets" aria-labelledby="presets-title"
+  class="modal w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-0 shadow-xl backdrop:bg-gray-900/40">
+  <div class="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+    <div>
+      <h3 id="presets-title" class="text-base font-semibold text-gray-900">Presets</h3>
+      <p class="text-xs text-gray-500">Fills in the form; you can still change anything.</p>
+    </div>
+    <button type="button" data-dialog-close aria-label="Close" class="rounded-md p-1 text-gray-400 hover:text-gray-900 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
+      <svg aria-hidden="true" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+    </button>
+  </div>
+  <div class="px-6 py-5 space-y-5">
+    {{range .Presets}}
+    <section>
+      <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">{{.Name}}</h4>
+      <div class="grid gap-2 sm:grid-cols-2">
+        {{range .Presets}}
+        <button type="button" data-preset="{{.Name}}" data-label="{{.Label}}" data-description="{{.Description}}" data-protocol="{{.Protocol}}"
+          data-endpoint="{{.Options.URL}}" data-endpoint-hint="{{.URLHint}}"
+          data-method="{{.Options.Method}}" data-headers="{{.Options.Headers}}" data-content-type="{{.Options.ContentType}}"
+          data-sign-with="{{.Options.SignWith}}" data-body="{{.Options.Body}}"
+          class="text-left rounded-lg border border-gray-200 px-4 py-3 hover:border-brand-300 hover:bg-brand-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
+          <span class="block text-sm font-medium text-gray-900">{{.Label}}</span>
+          <span class="block mt-0.5 text-xs text-gray-500">{{.Description}}</span>
+        </button>
+        {{end}}
+      </div>
+    </section>
+    {{end}}
+  </div>
+</dialog>
+
+<script>
+  const field = (id) => document.getElementById('dst-' + id);
+  const note = document.getElementById('preset-note');
+  const defaultNote = note.textContent;
+
+  const presets = document.getElementById('presets');
+  const apply = (o) => {
+    field('preset').value = o.preset;
+    field('protocol').value = o.protocol;
+    // (data-endpoint, not data-url: templates escape attributes named *url*
+    // as links.)
+    field('url').value = o.endpoint;
+    field('url').placeholder = o.endpointHint || 'https://example.com/hooks';
+    field('method').value = o.method || 'POST';
+    field('headers').value = o.headers;
+    field('content-type').value = o.contentType;
+    selectSecret(field('sign-with'), o.signWith);
+    field('body').value = o.body;
+    note.textContent = o.label + ': ' + o.description;
+  };
+  presets.querySelectorAll('[data-preset]').forEach((card) => card.addEventListener('click', () => {
+    apply(card.dataset);
+    presets.close();
+    field('name').focus();
+  }));
+
+  {{if .Form.Restore}}
+  // After a failed create, keep what was entered.
+  const restored = presets.querySelector(`[data-preset="${field('preset').value}"]`);
+  if (restored) note.textContent = restored.dataset.label + ': ' + restored.dataset.description;
+  if ({{.Form.Method}}) field('method').value = {{.Form.Method}};
+  {{else}}
+  apply(presets.querySelector('[data-preset="resend"]').dataset);
+  {{end}}
+</script>
+{{end}}

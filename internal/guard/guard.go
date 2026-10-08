@@ -123,23 +123,24 @@ type Preset struct {
 	Group       string // "Forms", "Signatures", or "Tokens"
 	Type        string
 	Scheme      string
+	Secret      string // the secret's suggested name, e.g. STRIPE_WEBHOOK_SECRET
 	Options     Options
 }
 
 // Presets are the dashboard's guard choices, grouped, in display order.
 var Presets = []Preset{
-	{"honeypot", "Honeypot", "Drops form posts that fill a hidden field, quietly.", "Forms", Honeypot, "", Options{Field: payload.HoneypotField}},
-	{"turnstile", "Cloudflare Turnstile", "Requires a Turnstile token from the form's widget.", "Forms", Captcha, Turnstile, Options{}},
-	{"recaptcha", "Google reCAPTCHA", "Requires a reCAPTCHA token; v3 scores below the minimum fail.", "Forms", Captcha, ReCAPTCHA, Options{MinScore: DefaultMinScore}},
+	{"honeypot", "Honeypot", "Drops form posts that fill a hidden field, quietly.", "Forms", Honeypot, "", "", Options{Field: payload.HoneypotField}},
+	{"turnstile", "Cloudflare Turnstile", "Requires a Turnstile token from the form's widget.", "Forms", Captcha, Turnstile, "TURNSTILE_SECRET_KEY", Options{}},
+	{"recaptcha", "Google reCAPTCHA", "Requires a reCAPTCHA token; v3 scores below the minimum fail.", "Forms", Captcha, ReCAPTCHA, "RECAPTCHA_SECRET_KEY", Options{MinScore: DefaultMinScore}},
 
-	{"github", "GitHub", "X-Hub-Signature-256: HMAC-SHA256 of the body.", "Signatures", Signature, HMAC, Options{Header: "X-Hub-Signature-256", Algorithm: "sha256", Encoding: "hex", Prefix: "sha256="}},
-	{"shopify", "Shopify", "X-Shopify-Hmac-Sha256: base64 HMAC-SHA256 of the body.", "Signatures", Signature, HMAC, Options{Header: "X-Shopify-Hmac-Sha256", Algorithm: "sha256", Encoding: "base64"}},
-	{"stripe", "Stripe", "Stripe-Signature, with a 5-minute replay window.", "Signatures", Signature, Stripe, Options{}},
-	{"hmac", "Custom HMAC", "An HMAC of the body in a header and format you choose.", "Signatures", Signature, HMAC, Options{Header: HMACHeader, Algorithm: "sha256", Encoding: "hex", Prefix: "sha256="}},
+	{"github", "GitHub", "X-Hub-Signature-256: HMAC-SHA256 of the body.", "Signatures", Signature, HMAC, "GITHUB_WEBHOOK_SECRET", Options{Header: "X-Hub-Signature-256", Algorithm: "sha256", Encoding: "hex", Prefix: "sha256="}},
+	{"shopify", "Shopify", "X-Shopify-Hmac-Sha256: base64 HMAC-SHA256 of the body.", "Signatures", Signature, HMAC, "SHOPIFY_WEBHOOK_SECRET", Options{Header: "X-Shopify-Hmac-Sha256", Algorithm: "sha256", Encoding: "base64"}},
+	{"stripe", "Stripe", "Stripe-Signature, with a 5-minute replay window.", "Signatures", Signature, Stripe, "STRIPE_WEBHOOK_SECRET", Options{}},
+	{"hmac", "Custom HMAC", "An HMAC of the body in a header and format you choose.", "Signatures", Signature, HMAC, "WEBHOOK_SECRET", Options{Header: HMACHeader, Algorithm: "sha256", Encoding: "hex", Prefix: "sha256="}},
 
-	{"bearer", "Bearer token", "Authorization: Bearer <token>.", "Tokens", Token, "", Options{Header: "Authorization", Prefix: "Bearer "}},
-	{"gitlab", "GitLab", "X-Gitlab-Token: <token>.", "Tokens", Token, "", Options{Header: "X-Gitlab-Token"}},
-	{"token", "Custom header", "A header you choose holds the token.", "Tokens", Token, "", Options{Header: "X-Catchy-Token"}},
+	{"bearer", "Bearer token", "Authorization: Bearer <token>.", "Tokens", Token, "", "API_TOKEN", Options{Header: "Authorization", Prefix: "Bearer "}},
+	{"gitlab", "GitLab", "X-Gitlab-Token: <token>.", "Tokens", Token, "", "GITLAB_WEBHOOK_TOKEN", Options{Header: "X-Gitlab-Token"}},
+	{"token", "Custom header", "A header you choose holds the token.", "Tokens", Token, "", "API_TOKEN", Options{Header: "X-Catchy-Token"}},
 }
 
 // PresetGroup is a group of presets, for the dashboard's picker.

@@ -1,0 +1,136 @@
+{{define "content"}}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+  <a href="{{.ListURL}}" class="text-sm text-gray-500 hover:text-gray-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">&larr; Hooks{{with .FilterNote}} <span class="text-gray-400">· {{.}}</span>{{end}}</a>
+  <nav class="flex items-center gap-2" aria-label="Neighboring hooks">
+    {{if .NewerURL}}<a href="{{.NewerURL}}" rel="prev" class="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">&larr; Newer</a>{{else}}<span class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-sm font-medium text-gray-300" aria-disabled="true">&larr; Newer</span>{{end}}
+    {{if .OlderURL}}<a href="{{.OlderURL}}" rel="next" class="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Older &rarr;</a>{{else}}<span class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-sm font-medium text-gray-300" aria-disabled="true">Older &rarr;</span>{{end}}
+  </nav>
+</div>
+
+{{with .Hook}}
+<article class="bg-white rounded-xl border border-gray-200 shadow-sm">
+  <header class="flex flex-wrap items-center justify-between gap-3 px-5 py-3 bg-gray-50 border-b border-gray-200 rounded-t-xl">
+    <div class="flex flex-wrap items-center gap-2 text-xs text-gray-500 min-w-0">
+      <code class="shrink-0 text-xs text-gray-500">{{.ID}}</code>
+      {{template "status-badge" .Status}}
+      <a href="/?channel={{.Channel}}" class="shrink-0 rounded-full bg-brand-50 text-brand-700 border border-brand-200 px-2 py-0.5 font-medium hover:bg-brand-100 transition-colors">#{{.Channel}}</a>
+      <time class="tabular-nums font-medium text-gray-700 shrink-0">{{.CreatedAt}}</time>
+      {{if .IP}}<span aria-hidden="true">&middot;</span><span class="tabular-nums shrink-0">{{.IP}}</span>{{end}}
+      {{if .Referer}}<span aria-hidden="true">&middot;</span><span class="truncate" title="{{.Referer}}">{{.Referer}}</span>{{end}}
+    </div>
+    <div class="flex items-center gap-1.5">
+      {{if eq .Status "pending"}}
+      <form method="POST" action="/hooks/{{.ID}}/process"><input type="hidden" name="back" value="{{$.Back}}">
+        <button type="submit" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 border border-emerald-200 hover:border-emerald-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Mark processed</button>
+      </form>
+      <form method="POST" action="/hooks/{{.ID}}/discard"><input type="hidden" name="back" value="{{$.Back}}">
+        <button type="submit" class="text-xs font-medium text-gray-600 hover:text-gray-900 border border-gray-200 hover:border-gray-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Discard</button>
+      </form>
+      {{else}}
+      <form method="POST" action="/hooks/{{.ID}}/retry"><input type="hidden" name="back" value="{{$.Back}}">
+        <button type="submit" class="text-xs font-medium text-amber-700 hover:text-amber-900 border border-amber-200 hover:border-amber-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">{{if eq .Status "failed"}}Retry{{else}}Back to pending{{end}}</button>
+      </form>
+      {{end}}
+      <form method="POST" action="/hooks/{{.ID}}/delete" onsubmit="return confirm('Delete this hook?')"><input type="hidden" name="back" value="{{$.ListURL}}">
+        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Delete</button>
+      </form>
+    </div>
+  </header>
+  {{$failed := and (eq .Status "failed") .LastFailure}}
+  {{if $failed}}
+  <p class="px-5 py-2 text-sm bg-red-50 text-red-700 border-b border-red-100">{{.LastFailure.Message}} <span class="text-xs opacity-75 tabular-nums">&middot; {{.LastFailure.At}}{{if gt (len .Failures) 1}} &middot; failed {{len .Failures}} times{{end}}</span></p>
+  {{end}}
+  {{if and (not $failed) (or .Failures .FinalizedAt)}}
+  <p class="px-5 py-2 text-xs bg-gray-50 text-gray-500 border-b border-gray-100">
+    {{if .Failures}}{{if .FinalizedAt}}{{.Status}} <span class="tabular-nums">{{.FinalizedAt}}</span> &middot; {{end}}failed {{len .Failures}} {{if eq (len .Failures) 1}}time{{else}}times{{end}} before, last: <span class="text-gray-700">{{.LastFailure.Message}}</span>
+    {{else}}{{.Status}} <span class="tabular-nums">{{.FinalizedAt}}</span>{{end}}
+  </p>
+  {{end}}
+  {{if .Payload}}
+  <section aria-labelledby="payload-heading">
+    <h3 id="payload-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Payload</h3>
+    <dl class="divide-y divide-gray-100">
+      {{range .Payload}}
+      <div class="px-5 py-2.5 grid grid-cols-3 gap-4">
+        <dt class="font-mono text-xs text-gray-500 pt-0.5 break-words">{{.Key}}</dt>
+        <dd class="col-span-2 text-sm text-gray-900 whitespace-pre-wrap break-words">{{.Value}}</dd>
+      </div>
+      {{end}}
+    </dl>
+  </section>
+  {{else}}
+  <h3 class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Body</h3>
+  <div class="px-5 pb-3">
+    {{if .Body}}<pre class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">{{.Body}}</pre>{{else}}<p class="text-sm text-gray-400 italic">Body: {{.BodyNote}}</p>{{end}}
+  </div>
+  {{end}}
+  {{with .Deliveries}}
+  <section class="border-t border-gray-100" aria-labelledby="deliveries-heading">
+    <h3 id="deliveries-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Deliveries</h3>
+    <ul class="divide-y divide-gray-100">
+      {{range .}}
+      <li>
+        <details class="group">
+          <summary class="list-none [&::-webkit-details-marker]:hidden flex items-center gap-3 px-5 py-2 text-sm cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:bg-brand-50">
+            <span class="shrink-0 w-4 text-center {{if eq .Status "delivered"}}text-emerald-600{{else if eq .Status "failed"}}text-red-600{{else}}text-amber-600{{end}}" aria-hidden="true">{{if eq .Status "delivered"}}&#10003;{{else if eq .Status "failed"}}&#10007;{{else}}&#8635;{{end}}</span>
+            <span class="shrink-0 font-medium text-gray-900">{{.Destination}}</span>
+            <span class="shrink-0 text-xs {{if eq .Status "delivered"}}text-emerald-700{{else if eq .Status "failed"}}text-red-700{{else}}text-amber-700{{end}}">
+              {{- if eq .Status "delivered"}}delivered{{else if eq .Status "failed"}}gave up{{else if .NextAt}}retry at {{.NextAt}}{{else}}sending…{{end -}}
+            </span>
+            <span class="min-w-0 flex-1 truncate text-xs text-gray-500">{{if ne .Status "delivered"}}{{.LastError}}{{end}}</span>
+            <span class="shrink-0 text-xs text-gray-400">{{.Attempts}} {{if eq .Attempts 1}}attempt{{else}}attempts{{end}}</span>
+            <svg aria-hidden="true" class="shrink-0 w-4 h-4 text-gray-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+          </summary>
+          <div class="px-5 pb-3 sm:pl-12">
+            {{if .History}}
+            <table class="w-full text-xs">
+              <tbody class="divide-y divide-gray-100 align-top">
+                {{range .History}}
+                <tr>
+                  <td class="py-1 pr-3 whitespace-nowrap tabular-nums text-gray-500"><span class="hidden sm:inline">{{.Date}} </span>{{.Time}}</td>
+                  <td class="py-1 pr-3 whitespace-nowrap {{if .Error}}text-red-700{{else}}text-emerald-700{{end}}">{{if .Error}}&#10007;{{else}}&#10003;{{end}}{{if .Status}} {{.Status}}{{end}}</td>
+                  <td class="py-1 pr-3 w-full break-words {{if .Error}}text-gray-700{{else}}text-gray-500{{end}}">{{if .Error}}{{.Error}}{{else}}delivered{{end}}</td>
+                  <td class="py-1 whitespace-nowrap text-right tabular-nums text-gray-400">{{.MS}} ms</td>
+                </tr>
+                {{end}}
+              </tbody>
+            </table>
+            {{else}}
+            <p class="text-xs text-gray-500">Not tried yet.</p>
+            {{end}}
+          </div>
+        </details>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+  {{/* The banner above already shows a lone current failure. */}}
+  {{if and .Failures (or (gt (len .Failures) 1) (not $failed))}}{{with .Failures}}
+  <section class="border-t border-gray-100" aria-labelledby="failures-heading">
+    <h3 id="failures-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Failures</h3>
+    <ol class="px-5 pb-3 space-y-1 text-xs">
+      {{range .}}<li class="flex gap-3"><time class="tabular-nums text-gray-500 shrink-0">{{.At}}</time><span class="text-red-700 break-words">{{.Message}}</span></li>{{end}}
+    </ol>
+  </section>
+  {{end}}{{end}}
+  <details class="border-t border-gray-100 group" open>
+    <summary class="px-5 py-2 text-xs font-medium text-gray-500 hover:text-gray-900 cursor-pointer select-none">
+      Raw request <span class="font-normal text-gray-400">&middot; {{.Method}}{{if .ContentType}} &middot; {{.ContentType}}{{end}}</span>
+    </summary>
+    <div class="px-5 pb-4 space-y-3">
+      <table class="w-full text-xs">
+        <tbody class="divide-y divide-gray-100">
+          {{range .Headers}}
+          <tr><th scope="row" class="py-1 pr-4 text-left font-medium text-gray-500 align-top whitespace-nowrap">{{.Key}}</th><td class="py-1 text-gray-800 font-mono break-all">{{.Value}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{if .Payload}}
+      {{if .Body}}<pre class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">{{.Body}}</pre>{{else}}<p class="text-xs text-gray-400 italic">Body: {{.BodyNote}}</p>{{end}}
+      {{end}}
+    </div>
+  </details>
+</article>
+{{end}}
+{{end}}

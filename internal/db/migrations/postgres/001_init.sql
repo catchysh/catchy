@@ -26,15 +26,15 @@ CREATE TABLE IF NOT EXISTS channels (
 );
 
 -- A guard is a configured check hooks must pass (see internal/guard). secret
--- is sealed with ENCRYPTION_KEY; secret_hint is a short masked form to show.
--- options is a JSON object of scheme settings, e.g. the signature header.
+-- is the name of the secret it checks with, a CATCHY_SECRET_ environment
+-- variable. options is a JSON object of
+-- scheme settings, e.g. the signature header.
 CREATE TABLE IF NOT EXISTS guards (
     name TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     scheme TEXT NOT NULL DEFAULT '',
     options TEXT NOT NULL DEFAULT '{}',
     secret TEXT NOT NULL DEFAULT '',
-    secret_hint TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -70,7 +70,49 @@ CREATE TABLE IF NOT EXISTS hooks (
 CREATE INDEX IF NOT EXISTS idx_hooks_channel_id ON hooks(channel, id);
 CREATE INDEX IF NOT EXISTS idx_hooks_status_id ON hooks(status, id);
 
+-- A destination is where hooks are delivered, over a protocol (http).
+-- options is a JSON object of its settings: URL, headers, and body are
+-- templates, which use secrets by name, like {{.Secrets.NAME}}.
+CREATE TABLE IF NOT EXISTS destinations (
+    name TEXT PRIMARY KEY,
+    protocol TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS channels_destinations (
+    channel TEXT NOT NULL REFERENCES channels(name) ON DELETE CASCADE,
+    destination TEXT NOT NULL REFERENCES destinations(name),
+    PRIMARY KEY (channel, destination)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channels_destinations_destination ON channels_destinations(destination);
+
+-- A delivery is one try at sending a hook to a destination; a
+-- destination's state for a hook is its latest try. Pending tries are sent
+-- when due_at comes. A failed try schedules the next as a new row, with
+-- attempt counting up, until retries run out.
+CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    hook_id TEXT NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
+    destination TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    due_at TIMESTAMPTZ NOT NULL,
+    http_status INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    ms INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_deliveries_hook ON deliveries(hook_id, destination, id);
+
 -- +goose Down
+DROP TABLE IF EXISTS deliveries;
+DROP TABLE IF EXISTS channels_destinations;
+DROP TABLE IF EXISTS destinations;
 DROP TABLE IF EXISTS hooks;
 DROP TABLE IF EXISTS channels_guards;
 DROP TABLE IF EXISTS guards;

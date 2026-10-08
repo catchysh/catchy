@@ -13,9 +13,9 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/catchysh/catchy/internal/db"
+	"github.com/catchysh/catchy/internal/env"
 	"github.com/catchysh/catchy/internal/guard"
 	"github.com/catchysh/catchy/internal/payload"
-	"github.com/catchysh/catchy/internal/seal"
 )
 
 // newTestServer returns a database and a handler serving hooks at /.
@@ -30,10 +30,8 @@ func newTestServer(t *testing.T) (*db.DB, http.Handler) {
 	if err := database.Migrate(t.Context()); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	sealer, _ := seal.New("test-key")
-	database.UseSealer(sealer)
 
-	h := NewHandler(database, &guard.Checker{}, true, false)
+	h := NewHandler(database, &guard.Checker{}, testEnv, true, false)
 	mux := http.NewServeMux()
 	mux.Handle("POST /{$}", h)
 	mux.Handle("OPTIONS /{$}", h)
@@ -301,7 +299,7 @@ func TestPausedChannelRefusesHooks(t *testing.T) {
 func TestChannelGuards(t *testing.T) {
 	database, h := newTestServer(t)
 	github := `{"header":"X-Hub-Signature-256","algorithm":"sha256","encoding":"hex","prefix":"sha256="}`
-	if _, err := database.CreateGuard(t.Context(), db.Guard{Name: "gh", Type: guard.Signature, Scheme: guard.HMAC, Options: github, Secret: "gh-secret"}); err != nil {
+	if _, err := database.CreateGuard(t.Context(), db.Guard{Name: "gh", Type: guard.Signature, Scheme: guard.HMAC, Options: github, Secret: "GH_SECRET"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.SetChannelGuards(t.Context(), "github", []string{"gh"}); err != nil {
@@ -335,7 +333,7 @@ func TestChannelGuards(t *testing.T) {
 
 func TestTokenGuard(t *testing.T) {
 	database, h := newTestServer(t)
-	database.CreateGuard(t.Context(), db.Guard{Name: "bearer", Type: guard.Token, Options: `{"header":"Authorization","prefix":"Bearer "}`, Secret: "tok-123"})
+	database.CreateGuard(t.Context(), db.Guard{Name: "bearer", Type: guard.Token, Options: `{"header":"Authorization","prefix":"Bearer "}`, Secret: "TOKEN"})
 	database.SetChannelGuards(t.Context(), "ci", []string{"bearer"})
 
 	if rec := do(h, http.MethodPost, "/?channel=ci", "application/json", `{}`, "Authorization", "Bearer nope"); rec.Code != http.StatusForbidden {
@@ -346,9 +344,30 @@ func TestTokenGuard(t *testing.T) {
 	}
 }
 
+var testEnv = env.Env{Secrets: map[string]string{"GH_SECRET": "gh-secret", "TOKEN": "tok-123", "CI_TOKEN": "tok-env"}}
+
+func TestGuardSecretFromEnv(t *testing.T) {
+	database, h := newTestServer(t)
+	database.CreateGuard(t.Context(), db.Guard{Name: "bearer", Type: guard.Token, Options: `{"header":"Authorization","prefix":"Bearer "}`, Secret: "CI_TOKEN"})
+	database.CreateGuard(t.Context(), db.Guard{Name: "unset", Type: guard.Token, Options: `{"header":"X-Token"}`, Secret: "NOPE"})
+	database.SetChannelGuards(t.Context(), "ci", []string{"bearer"})
+	database.SetChannelGuards(t.Context(), "broken", []string{"unset"})
+
+	if rec := do(h, http.MethodPost, "/?channel=ci", "application/json", `{}`, "Authorization", "Bearer CI_TOKEN"); rec.Code != http.StatusForbidden {
+		t.Fatalf("the secret's name as the token: status = %d", rec.Code)
+	}
+	if rec := do(h, http.MethodPost, "/?channel=ci", "application/json", `{}`, "Authorization", "Bearer tok-env"); rec.Code != http.StatusOK {
+		t.Fatalf("env token: status = %d, body %s", rec.Code, rec.Body)
+	}
+	// A reference to an unset secret fails closed.
+	if rec := do(h, http.MethodPost, "/?channel=broken", "application/json", `{}`, "X-Token", ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("unset env secret: status = %d", rec.Code)
+	}
+}
+
 func TestAutoCreateOff(t *testing.T) {
 	database, _ := newTestServer(t)
-	h := NewHandler(database, &guard.Checker{}, false, false)
+	h := NewHandler(database, &guard.Checker{}, testEnv, false, false)
 	database.EnsureChannel(t.Context(), "known")
 
 	if rec := do(h, http.MethodPost, "/?channel=unknown", "application/json", `{}`); rec.Code != http.StatusNotFound {
