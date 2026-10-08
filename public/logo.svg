@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="66 40 380 380">
+  <defs>
+    <linearGradient id="catchyGrad" gradientUnits="userSpaceOnUse" x1="81" y1="71" x2="431" y2="389">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#6D28D9" />
+    </linearGradient>
+  </defs>
+  <g stroke="url(#catchyGrad)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Webhook mark: three nodes, each hooking around the center -->
+    <path d="M256 170v34a60 60 0 0 1 54.4 34.6" />
+    <circle cx="256" cy="128" r="40" />
+    <path d="M337.4 311l-29.4-17a60 60 0 0 1 -57.2 29.8" />
+    <circle cx="373.8" cy="332" r="40" />
+    <path d="M174.6 311l29.4-17a60 60 0 0 1 2.9-64.4" />
+    <circle cx="138.2" cy="332" r="40" />
+  </g>
+</svg>

@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package catchy.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "github.com/catchysh/catchy/gen/catchy/v1;catchyv1";
+
+// Number of a channel's hooks in each status.
+message ChannelStats {
+  int64 pending = 1 [(google.api.field_behavior) = REQUIRED];
+  int64 processed = 2 [(google.api.field_behavior) = REQUIRED];
+  int64 failed = 3 [(google.api.field_behavior) = REQUIRED];
+  int64 discarded = 4 [(google.api.field_behavior) = REQUIRED];
+}
+
+// A channel groups hooks. Channels are created the first time a hook is sent
+// to them.
+message Channel {
+  // Channel name, as passed in ?channel=. Hooks sent without one go to
+  // "default".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  ];
+  // Whether the channel refuses new hooks. Senders get 503 Service
+  // Unavailable, which webhook providers retry later.
+  bool paused = 2 [(google.api.field_behavior) = REQUIRED];
+  ChannelStats stats = 3 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+  // Names of the guards every hook must pass to be caught, set in the
+  // dashboard. A channel created by its first hook gets the default guards.
+  repeated string guards = 4 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).repeated = {
+      items: {
+        string: {
+          pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+          max_len: 64
+        }
+      }
+      unique: true
+    }
+  ];
+}
+
+service ChannelService {
+  // List channels by name.
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/channels"
+      response_body: "channels"
+    };
+  }
+
+  // Get a channel.
+  rpc GetChannel(GetChannelRequest) returns (GetChannelResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/channels/{name}"
+      response_body: "channel"
+    };
+  }
+
+  // Pause a channel: it refuses new hooks until resumed. Hooks it already
+  // caught are unaffected.
+  rpc PauseChannel(PauseChannelRequest) returns (PauseChannelResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {
+      post: "/v1/channels/{name}/pause"
+      body: "*"
+      response_body: "channel"
+    };
+  }
+
+  // Resume a paused channel so it catches hooks again.
+  rpc ResumeChannel(ResumeChannelRequest) returns (ResumeChannelResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {
+      post: "/v1/channels/{name}/resume"
+      body: "*"
+      response_body: "channel"
+    };
+  }
+
+  // Permanently delete a channel and all its hooks. A hook
+  // sent to it later creates it again.
+  rpc DeleteChannel(DeleteChannelRequest) returns (DeleteChannelResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {delete: "/v1/channels/{name}"};
+  }
+}
+
+message ListChannelsRequest {}
+
+message ListChannelsResponse {
+  // Sorted by name.
+  repeated Channel channels = 1;
+}
+
+message GetChannelRequest {
+  string name = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }
+  }];
+}
+
+message GetChannelResponse {
+  Channel channel = 1 [(buf.validate.field).required = true];
+}
+
+message PauseChannelRequest {
+  string name = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }
+  }];
+}
+
+message PauseChannelResponse {
+  Channel channel = 1 [(buf.validate.field).required = true];
+}
+
+message ResumeChannelRequest {
+  string name = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }
+  }];
+}
+
+message ResumeChannelResponse {
+  Channel channel = 1 [(buf.validate.field).required = true];
+}
+
+message DeleteChannelRequest {
+  string name = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }
+  }];
+}
+
+message DeleteChannelResponse {}

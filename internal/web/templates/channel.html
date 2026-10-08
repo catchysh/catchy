@@ -1,0 +1,162 @@
+{{define "content"}}
+{{with .Channel}}
+<a href="/channels" class="text-sm text-gray-500 hover:text-gray-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">&larr; Channels</a>
+<div class="mt-2 mb-6 flex flex-wrap items-center justify-between gap-4">
+  <div class="flex items-center gap-3">
+    <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance"><span class="text-brand-400">#</span>{{.Name}}</h2>
+    {{if .Paused}}<span class="rounded-full bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-0.5 text-xs font-medium">paused</span>{{end}}
+  </div>
+  <div class="flex items-center gap-2">
+    <a href="{{$.HooksURL}}" class="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">View hooks</a>
+    {{if .Paused}}
+    <form method="POST" action="/channels/{{.Name}}/resume">
+      <button type="submit" class="rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Resume</button>
+    </form>
+    {{else}}
+    <form method="POST" action="/channels/{{.Name}}/pause">
+      <button type="submit" title="Refuse new hooks with 503 so senders retry later"
+        class="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-sm font-medium text-amber-700 hover:border-amber-300 hover:bg-amber-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Pause</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+{{if .Paused}}
+<p class="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">Paused since {{.PausedAt.Local.Format "2006-01-02 15:04"}}. New hooks are refused with 503, so webhook providers retry them later.</p>
+{{end}}
+{{end}}
+
+<div class="mb-6 grid gap-3 grid-cols-2 lg:grid-cols-4">
+  {{with .Channel.Stats}}
+  <a href="/?channel={{$.Channel.Name}}&amp;status=pending" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-amber-500" aria-hidden="true"></span>Pending</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Pending}}text-amber-700{{else}}text-gray-300{{end}}">{{.Pending}}</span></a>
+  <a href="/?channel={{$.Channel.Name}}&amp;status=processed" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true"></span>Processed</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Processed}}text-gray-900{{else}}text-gray-300{{end}}">{{.Processed}}</span></a>
+  <a href="/?channel={{$.Channel.Name}}&amp;status=failed" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-red-500" aria-hidden="true"></span>Failed</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Failed}}text-red-700{{else}}text-gray-300{{end}}">{{.Failed}}</span></a>
+  <a href="/?channel={{$.Channel.Name}}&amp;status=discarded" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-gray-400" aria-hidden="true"></span>Discarded</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Discarded}}text-gray-900{{else}}text-gray-300{{end}}">{{.Discarded}}</span></a>
+  {{end}}
+</div>
+
+<div class="grid gap-6 grid-cols-1 lg:grid-cols-3">
+  <div class="min-w-0 space-y-6">
+    <section class="bg-white rounded-xl border border-gray-200 shadow-sm p-5" aria-labelledby="guards-heading">
+      <div class="flex items-baseline justify-between gap-2 mb-1">
+        <h3 id="guards-heading" class="text-sm font-semibold text-gray-900">Guards</h3>
+        <a href="/guards" class="text-xs text-brand-700 hover:underline">Manage</a>
+      </div>
+      <p class="text-xs text-gray-500 mb-4">Hooks must pass every checked guard; failures get 403 and aren't stored.</p>
+      <form method="POST" action="/channels/{{.Channel.Name}}/guards">
+        {{if .Guards}}
+        <div class="divide-y divide-gray-100 rounded-lg border border-gray-200">
+          {{range .Guards}}
+          <label class="flex gap-3 items-start px-3 py-2.5 cursor-pointer hover:bg-gray-50">
+            <input type="checkbox" name="guard" value="{{.Name}}" {{if .Enabled}}checked{{end}}
+              class="mt-0.5 rounded border-gray-300 text-brand-600 focus:ring-brand-500">
+            <span class="min-w-0">
+              <span class="block text-sm font-medium text-gray-900">{{.Name}}</span>
+              <span class="block text-xs text-gray-500 truncate" title="{{.Kind}}">{{.Kind}}</span>
+            </span>
+          </label>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="text-sm text-gray-500">No guards yet. <a href="/guards" class="text-brand-700 hover:underline">Create one</a>.</p>
+        {{end}}
+        <button type="submit" class="mt-4 w-full rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Save guards</button>
+      </form>
+    </section>
+
+    <section class="rounded-xl border border-red-200 bg-white p-5" aria-labelledby="danger-heading">
+      <h3 id="danger-heading" class="text-sm font-semibold text-red-700 mb-1">Danger zone</h3>
+      <p class="text-xs text-gray-500 mb-4">Deletes the channel and all its hooks. A hook sent to it later creates it again.</p>
+      <form method="POST" action="/channels/{{.Channel.Name}}/delete"
+        onsubmit="return confirm('Delete #{{.Channel.Name}} and all its hooks?')">
+        <button type="submit"
+          class="w-full text-sm font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 hover:bg-red-50 rounded-md px-4 py-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Delete channel</button>
+      </form>
+    </section>
+  </div>
+
+  <section class="lg:col-span-2 min-w-0 self-start bg-white rounded-xl border border-gray-200 shadow-sm" aria-labelledby="send-heading">
+    <div class="flex items-center justify-between gap-4 border-b border-gray-200 px-5 pt-4">
+      <div class="flex gap-4" role="tablist" aria-labelledby="send-heading">
+        <h3 id="send-heading" class="sr-only">Send a hook</h3>
+        <button type="button" role="tab" aria-selected="true" aria-controls="snippet-curl" data-tab="snippet-curl" class="-mb-px border-b-2 px-1 pb-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 aria-selected:border-brand-600 aria-selected:text-brand-700 border-transparent text-gray-500 hover:text-gray-900">cURL</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="snippet-form" data-tab="snippet-form" class="-mb-px border-b-2 px-1 pb-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 aria-selected:border-brand-600 aria-selected:text-brand-700 border-transparent text-gray-500 hover:text-gray-900">HTML</button>
+      </div>
+      <button type="button" data-copy-tab class="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-900 border border-gray-200 hover:border-gray-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
+        <svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+        <span data-label>Copy</span>
+      </button>
+    </div>
+    <div class="p-5">
+      <div role="tabpanel" data-panel="snippet-curl">
+{{with .HMAC}}<pre id="snippet-curl" class="text-xs bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto leading-relaxed">BODY='{"event":"ping"}'
+SIG=$(printf %s "$BODY" | openssl dgst -{{.Algorithm}} -hmac "$SECRET"{{if .Base64}} \
+  -binary | base64){{else}} \
+  | sed 's/^.* //'){{end}}
+curl "{{$.HookURL}}" \
+  -H "Content-Type: application/json" \
+  -H "{{.Header}}: {{.Prefix}}$SIG" \
+  -d "$BODY"</pre>{{else}}<pre id="snippet-curl" class="text-xs bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto leading-relaxed">curl "{{.HookURL}}" \
+  -H "Content-Type: application/json" \
+  -d '{"event":"ping"}'</pre>{{end}}
+      </div>
+      <div role="tabpanel" data-panel="snippet-form" hidden>
+<pre id="snippet-form" class="text-xs bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto leading-relaxed">&lt;form id="contact"&gt;
+  &lt;input type="text" name="name" required&gt;
+  &lt;input type="email" name="email" required&gt;
+  &lt;textarea name="message" required&gt;&lt;/textarea&gt;
+  &lt;!-- honeypot: keep it hidden and empty --&gt;
+  &lt;input type="text" name="{{.Honeypot}}" style="display:none"
+    tabindex="-1" autocomplete="off"&gt;{{if eq .Captcha "turnstile"}}
+  &lt;div class="cf-turnstile" data-sitekey="YOUR_SITE_KEY"&gt;&lt;/div&gt;{{else if eq .Captcha "recaptcha"}}
+  &lt;div class="g-recaptcha" data-sitekey="YOUR_SITE_KEY"&gt;&lt;/div&gt;{{end}}
+  &lt;button type="submit"&gt;Send&lt;/button&gt;
+&lt;/form&gt;{{if eq .Captcha "turnstile"}}
+&lt;script src="https://challenges.cloudflare.com/turnstile/v0/api.js"
+  async defer&gt;&lt;/script&gt;{{else if eq .Captcha "recaptcha"}}
+&lt;script src="https://www.google.com/recaptcha/api.js"
+  async defer&gt;&lt;/script&gt;{{end}}
+&lt;script&gt;
+  contact.addEventListener("submit", async (e) =&gt; {
+    e.preventDefault();
+    const res = await fetch("{{.HookURL}}", {
+      method: "POST",
+      body: new URLSearchParams(new FormData(contact)),
+    });
+    contact.innerHTML = res.ok
+      ? "Thanks! We'll be in touch."
+      : "Something went wrong, please try again.";
+  });
+&lt;/script&gt;</pre>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const flash = (btn) => {
+    const label = btn.querySelector('[data-label]') || btn;
+    label.textContent = 'Copied!';
+    setTimeout(() => label.textContent = 'Copy', 2000);
+  };
+  document.querySelectorAll('[data-copy]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(btn.dataset.copy);
+      flash(btn);
+    });
+  });
+
+  // Snippet tabs; Copy copies the visible one.
+  const tabs = document.querySelectorAll('[data-tab]');
+  let current = 'snippet-curl';
+  tabs.forEach((tab) => tab.addEventListener('click', () => {
+    current = tab.dataset.tab;
+    tabs.forEach((t) => t.setAttribute('aria-selected', t === tab ? 'true' : 'false'));
+    document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== current; });
+  }));
+  document.querySelector('[data-copy-tab]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget; // cleared once the handler awaits
+    await navigator.clipboard.writeText(document.getElementById(current).textContent);
+    flash(btn);
+  });
+</script>
+{{end}}

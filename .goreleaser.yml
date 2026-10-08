@@ -1,0 +1,45 @@
+version: 2
+before:
+  hooks:
+    - buf generate
+builds:
+  - main: ./cmd/catchy
+    binary: catchy
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{ .Version }}
+    goarch:
+      - amd64
+      - arm64
+    goos:
+      - linux
+      - darwin
+      - windows
+dockers_v2:
+  - images:
+      - ghcr.io/catchysh/catchy
+      - catchysh/catchy
+    extra_files:
+      - public/
+    tags:
+      - "{{ .Tag }}"
+      - latest
+    labels:
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.name": "{{ .ProjectName }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
+brews:
+  - repository:
+      owner: catchysh
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    description: "Self-hosted webhook and form inbox"
+    homepage: "https://github.com/catchysh/catchy"
+    license: "Apache-2.0"
+changelog:
+  disable: true

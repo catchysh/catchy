@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+package catchy.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/catchysh/catchy/gen/catchy/v1;catchyv1";
+
+// A hook is one request caught at POST /?channel={channel}: a webhook, a
+// contact form submission, or anything else. Catchy stores it as received;
+// consumers process it outside and report back by setting its status.
+message Hook {
+  // Unique hook ID, a lowercase ULID: IDs sort by the time they were caught.
+  string id = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    }
+  ];
+  // Name of the channel that caught it.
+  string channel = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  ];
+  // Processing state: "pending" until a consumer sets "processed", "failed",
+  // or "discarded".
+  string status = 3 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {
+        in: [
+          "pending",
+          "processed",
+          "failed",
+          "discarded"
+        ]
+      }
+    }
+  ];
+  // HTTP method of the request.
+  string method = 4 [(google.api.field_behavior) = REQUIRED];
+  // Raw query string of the request, without the leading "?".
+  string query = 5 [(google.api.field_behavior) = REQUIRED];
+  // Request headers. Repeated headers are joined with ", ". Cookies are not
+  // stored.
+  map<string, string> headers = 6 [(google.api.field_behavior) = REQUIRED];
+  // Media type of the body, from the Content-Type header. Empty when not sent.
+  string content_type = 7 [(google.api.field_behavior) = REQUIRED];
+  // The body exactly as received, e.g. for verifying a webhook signature.
+  bytes body = 8 [(google.api.field_behavior) = REQUIRED];
+  // The body decoded, when it is a JSON object or a form. Form fields are
+  // strings, or arrays of strings when a field was sent more than once.
+  optional google.protobuf.Struct payload = 9;
+  // IP address of the sender.
+  string ip = 10 [(google.api.field_behavior) = REQUIRED];
+  // Every failure reported for the hook, oldest first. Kept when the hook is
+  // retried, so its history stays visible after it's processed.
+  repeated Failure failures = 11 [(google.api.field_behavior) = REQUIRED];
+  // When the hook was caught.
+  google.protobuf.Timestamp created_at = 12 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+  // When the hook was processed or discarded. Absent while pending or failed.
+  optional google.protobuf.Timestamp finalized_at = 13;
+}
+
+// A failure a consumer reported for a hook.
+message Failure {
+  google.protobuf.Timestamp at = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+  string message = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+}
+
+service HookService {
+  // List hooks, newest first. To get the next page, pass the last hook's ID
+  // as after. A page shorter than limit is the last one.
+  // To consume a channel, list its pending hooks, handle them, and report
+  // each one with ProcessHook, FailHook, or DiscardHook.
+  rpc ListHooks(ListHooksRequest) returns (ListHooksResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/hooks"
+      response_body: "hooks"
+    };
+  }
+
+  // Get a hook.
+  rpc GetHook(GetHookRequest) returns (GetHookResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/hooks/{id}"
+      response_body: "hook"
+    };
+  }
+
+  // Mark a hook processed: a consumer has handled it.
+  rpc ProcessHook(ProcessHookRequest) returns (ProcessHookResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {
+      post: "/v1/hooks/{id}/process"
+      body: "*"
+      response_body: "hook"
+    };
+  }
+
+  // Mark a hook failed: a consumer tried and couldn't. The message is added
+  // to its failures, which are kept when it's retried.
+  rpc FailHook(FailHookRequest) returns (FailHookResponse) {
+    option (google.api.http) = {
+      post: "/v1/hooks/{id}/fail"
+      body: "*"
+      response_body: "hook"
+    };
+  }
+
+  // Mark a hook discarded: it was deliberately ignored.
+  rpc DiscardHook(DiscardHookRequest) returns (DiscardHookResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {
+      post: "/v1/hooks/{id}/discard"
+      body: "*"
+      response_body: "hook"
+    };
+  }
+
+  // Set a hook back to pending so consumers process it again. Its failures
+  // are kept.
+  rpc RetryHook(RetryHookRequest) returns (RetryHookResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {
+      post: "/v1/hooks/{id}/retry"
+      body: "*"
+      response_body: "hook"
+    };
+  }
+
+  // Permanently delete a hook.
+  rpc DeleteHook(DeleteHookRequest) returns (DeleteHookResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {delete: "/v1/hooks/{id}"};
+  }
+}
+
+message ListHooksRequest {
+  // Only list hooks in this channel. Absent means all channels.
+  optional string channel = 1 [(buf.validate.field).string = {
+    pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+    max_len: 64
+  }];
+  // Only list hooks with this status. Absent means all statuses.
+  optional string status = 4 [(buf.validate.field).string = {
+    in: [
+      "pending",
+      "processed",
+      "failed",
+      "discarded"
+    ]
+  }];
+  // Maximum number of hooks to return. Absent means 50.
+  optional int32 limit = 2 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 100
+  }];
+  // ID of the last hook from the previous page; only older hooks are
+  // returned. Absent means the first page.
+  optional string after = 3 [(buf.validate.field).string.pattern = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"];
+}
+
+message ListHooksResponse {
+  // Newest first.
+  repeated Hook hooks = 1;
+}
+
+message GetHookRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message GetHookResponse {
+  Hook hook = 1 [(buf.validate.field).required = true];
+}
+
+message ProcessHookRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message ProcessHookResponse {
+  Hook hook = 1 [(buf.validate.field).required = true];
+}
+
+message FailHookRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+  // Why it failed.
+  string message = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 2048
+  }];
+}
+
+message FailHookResponse {
+  Hook hook = 1 [(buf.validate.field).required = true];
+}
+
+message DiscardHookRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message DiscardHookResponse {
+  Hook hook = 1 [(buf.validate.field).required = true];
+}
+
+message RetryHookRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message RetryHookResponse {
+  Hook hook = 1 [(buf.validate.field).required = true];
+}
+
+message DeleteHookRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message DeleteHookResponse {}

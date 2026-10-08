@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="catchyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#6D28D9" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity="0.15" />
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#catchyGrad)" />
+  <g stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#shadow)" transform="translate(0 26)">
+    <!-- Webhook mark: three nodes, each hooking around the center -->
+    <path d="M256 170v34a60 60 0 0 1 54.4 34.6" />
+    <circle cx="256" cy="128" r="40" />
+    <path d="M337.4 311l-29.4-17a60 60 0 0 1 -57.2 29.8" />
+    <circle cx="373.8" cy="332" r="40" />
+    <path d="M174.6 311l29.4-17a60 60 0 0 1 2.9-64.4" />
+    <circle cx="138.2" cy="332" r="40" />
+  </g>
+</svg>

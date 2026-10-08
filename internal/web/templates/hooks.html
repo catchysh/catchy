@@ -1,0 +1,138 @@
+{{define "status-badge"}}
+{{- if eq . "pending"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>pending</span>
+{{- else if eq . "processed"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>processed</span>
+{{- else if eq . "failed"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true"></span>failed</span>
+{{- else}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-600 border border-gray-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-gray-400" aria-hidden="true"></span>{{.}}</span>
+{{- end}}
+{{end}}
+
+{{define "content"}}
+<div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Hooks</h2>
+  <form method="GET" action="/" class="flex items-center gap-2">
+    {{if .Status}}<input type="hidden" name="status" value="{{.Status}}">{{end}}
+    <label for="channel-filter" class="text-sm text-gray-500">Channel</label>
+    <select id="channel-filter" name="channel" onchange="this.form.submit()"
+      class="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+      <option value="">All</option>
+      {{range .Channels}}<option value="{{.Name}}" {{if .Selected}}selected{{end}}>#{{.Name}}</option>{{end}}
+    </select>
+    <noscript><button type="submit" class="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm">Filter</button></noscript>
+  </form>
+</div>
+
+<nav class="mb-6 flex flex-wrap gap-2" aria-label="Filter by status">
+  {{range .Statuses}}
+  <a href="{{.URL}}" {{if .Active}}aria-current="page"{{end}} class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if .Active}}bg-brand-600 border-brand-600 text-white{{else}}bg-white border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50{{end}}">
+    {{.Label}}<span class="tabular-nums text-xs {{if .Active}}text-brand-100{{else}}text-gray-400{{end}}">{{.Count}}</span>
+  </a>
+  {{end}}
+</nav>
+
+<section aria-label="Hooks">
+    {{if .Hooks}}
+    <div class="space-y-4">
+      {{range .Hooks}}
+      <article class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <header class="flex flex-wrap items-center justify-between gap-3 px-5 py-3 bg-gray-50 border-b border-gray-200">
+          <div class="flex items-center gap-2 text-xs text-gray-500 min-w-0">
+            {{template "status-badge" .Status}}
+            {{if not $.Channel}}<a href="/?channel={{.Channel}}" class="shrink-0 rounded-full bg-brand-50 text-brand-700 border border-brand-200 px-2 py-0.5 font-medium hover:bg-brand-100 transition-colors">#{{.Channel}}</a>{{end}}
+            <time class="tabular-nums font-medium text-gray-700 shrink-0">{{.CreatedAt}}</time>
+            {{if .IP}}<span aria-hidden="true">&middot;</span><span class="tabular-nums shrink-0">{{.IP}}</span>{{end}}
+            {{if .Referer}}<span aria-hidden="true">&middot;</span><span class="truncate" title="{{.Referer}}">{{.Referer}}</span>{{end}}
+          </div>
+          <div class="flex items-center gap-1.5">
+            {{if eq .Status "pending"}}
+            <form method="POST" action="/hooks/{{.ID}}/process"><input type="hidden" name="back" value="{{$.Back}}">
+              <button type="submit" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 border border-emerald-200 hover:border-emerald-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Mark processed</button>
+            </form>
+            <form method="POST" action="/hooks/{{.ID}}/discard"><input type="hidden" name="back" value="{{$.Back}}">
+              <button type="submit" class="text-xs font-medium text-gray-600 hover:text-gray-900 border border-gray-200 hover:border-gray-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Discard</button>
+            </form>
+            {{else}}
+            <form method="POST" action="/hooks/{{.ID}}/retry"><input type="hidden" name="back" value="{{$.Back}}">
+              <button type="submit" class="text-xs font-medium text-amber-700 hover:text-amber-900 border border-amber-200 hover:border-amber-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">{{if eq .Status "failed"}}Retry{{else}}Back to pending{{end}}</button>
+            </form>
+            {{end}}
+            <form method="POST" action="/hooks/{{.ID}}/delete" onsubmit="return confirm('Delete this hook?')"><input type="hidden" name="back" value="{{$.Back}}">
+              <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Delete</button>
+            </form>
+          </div>
+        </header>
+        {{if and (eq .Status "failed") .LastFailure}}
+        <p class="px-5 py-2 text-sm bg-red-50 text-red-700 border-b border-red-100">{{.LastFailure.Message}} <span class="text-xs opacity-75 tabular-nums">&middot; {{.LastFailure.At}}{{if gt (len .Failures) 1}} &middot; failed {{len .Failures}} times{{end}}</span></p>
+        {{else if .Failures}}
+        <p class="px-5 py-2 text-xs bg-gray-50 text-gray-500 border-b border-gray-100">{{if .FinalizedAt}}{{.Status}} {{.FinalizedAt}} &middot; {{end}}failed {{len .Failures}} {{if eq (len .Failures) 1}}time{{else}}times{{end}} before, last: <span class="text-gray-700">{{.LastFailure.Message}}</span></p>
+        {{else if .FinalizedAt}}
+        <p class="px-5 py-2 text-xs bg-gray-50 text-gray-500 border-b border-gray-100 tabular-nums">{{.Status}} {{.FinalizedAt}}</p>
+        {{end}}
+        {{if .Payload}}
+        <dl class="divide-y divide-gray-100">
+          {{range .Payload}}
+          <div class="px-5 py-3 grid grid-cols-3 gap-4">
+            <dt class="text-xs font-medium uppercase tracking-wider text-gray-500 pt-0.5 break-words">{{.Key}}</dt>
+            <dd class="col-span-2 text-sm text-gray-900 whitespace-pre-wrap break-words">{{.Value}}</dd>
+          </div>
+          {{end}}
+        </dl>
+        {{else}}
+        <div class="px-5 py-3">
+          {{if .Body}}<pre class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">{{.Body}}</pre>{{else}}<p class="text-sm text-gray-400 italic">Body: {{.BodyNote}}</p>{{end}}
+        </div>
+        {{end}}
+        <details class="border-t border-gray-100 group">
+          <summary class="px-5 py-2 text-xs font-medium text-gray-500 hover:text-gray-900 cursor-pointer select-none">
+            Raw request <span class="font-normal text-gray-400">&middot; {{.Method}}{{if .ContentType}} &middot; {{.ContentType}}{{end}}</span>
+          </summary>
+          <div class="px-5 pb-4 space-y-3">
+            <table class="w-full text-xs">
+              <tbody class="divide-y divide-gray-100">
+                {{range .Headers}}
+                <tr><th scope="row" class="py-1 pr-4 text-left font-medium text-gray-500 align-top whitespace-nowrap">{{.Key}}</th><td class="py-1 text-gray-800 font-mono break-all">{{.Value}}</td></tr>
+                {{end}}
+              </tbody>
+            </table>
+            {{if .Payload}}
+            {{if .Body}}<pre class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">{{.Body}}</pre>{{else}}<p class="text-xs text-gray-400 italic">Body: {{.BodyNote}}</p>{{end}}
+            {{end}}
+            {{if .Failures}}
+            <div>
+              <h4 class="text-xs font-medium text-gray-500 mb-1">Failures</h4>
+              <ol class="space-y-1 text-xs">
+                {{range .Failures}}<li class="flex gap-3"><time class="tabular-nums text-gray-400 shrink-0">{{.At}}</time><span class="text-red-700 break-words">{{.Message}}</span></li>{{end}}
+              </ol>
+            </div>
+            {{end}}
+            <p class="text-xs text-gray-400 font-mono">{{.ID}}</p>
+          </div>
+        </details>
+      </article>
+      {{end}}
+    </div>
+    {{if or .NewestURL .NextURL}}
+    <nav class="mt-4 flex items-center justify-between text-sm" aria-label="Pagination">
+      {{if .NewestURL}}<a href="{{.NewestURL}}" class="font-medium text-gray-600 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">&larr; Newest</a>{{else}}<span></span>{{end}}
+      {{if .NextURL}}<a href="{{.NextURL}}" class="font-medium text-gray-600 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">Older &rarr;</a>{{end}}
+    </nav>
+    {{end}}
+    {{else}}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm px-6 py-12 text-center text-gray-500">
+      {{if .NewestURL}}
+      <p>No more hooks. <a href="{{.NewestURL}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Back to newest</a></p>
+      {{else if .Status}}
+      <p>No {{.Status}} hooks{{if .Channel}} in <span class="text-gray-700">#{{.Channel}}</span>{{end}}. <a href="{{if .Channel}}/?channel={{.Channel}}{{else}}/{{end}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Show all</a></p>
+      {{else}}
+      <svg aria-hidden="true" class="mx-auto h-12 w-12 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+      </svg>
+      <p class="mb-4">No hooks {{if .Channel}}in <span class="text-gray-700">#{{.Channel}}</span> {{end}}yet. Send one:</p>
+      <pre class="inline-block text-left text-xs bg-gray-900 text-gray-100 rounded-lg px-4 py-3 overflow-x-auto max-w-full"><code>curl -X POST "{{.HookURL}}?channel={{if .Channel}}{{.Channel}}{{else}}test{{end}}" \
+  -H "Content-Type: application/json" \
+  -d '{"hello":"world"}'</code></pre>
+      <p class="mt-4 text-sm">Catching a form or a provider's webhooks? Set up the channel and its guards in <a href="{{if .Channel}}/channels/{{.Channel}}{{else}}/channels{{end}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Channels</a>.</p>
+      {{end}}
+    </div>
+    {{end}}
+</section>
+{{end}}

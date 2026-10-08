@@ -1,0 +1,13 @@
+/public/openapi.yaml
+/gen/
+
+/catchy
+
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+.gocache
+
+.env

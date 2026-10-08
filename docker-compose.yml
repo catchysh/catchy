@@ -1,0 +1,19 @@
+services:
+  catchy:
+    build:
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=file:/data/catchy.db
+      - SESSION_SECRET=${SESSION_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - HOSTNAME=${HOSTNAME:-http://localhost:8080}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    volumes:
+      - catchy-data:/data
+
+volumes:
+  catchy-data:

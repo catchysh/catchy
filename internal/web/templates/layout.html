@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{if .Title}}{{.Title}} — Catchy{{else}}Catchy{{end}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            // Catchy violet, anchored on the logo gradient (#8B5CF6 → #6D28D9).
+            brand: {
+              50: '#f5f3ff',
+              100: '#ede9fe',
+              200: '#ddd6fe',
+              300: '#c4b5fd',
+              400: '#a78bfa',
+              500: '#8b5cf6',
+              600: '#7c3aed',
+              700: '#6d28d9',
+              800: '#5b21b6',
+              900: '#4c1d95',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Always reserve the scrollbar's space, so pages that scroll and pages
+       that don't line up the same and switching tabs doesn't shift them. */
+    html { scrollbar-gutter: stable; }
+    /* Dialogs sit at a fixed spot near the top, so they don't jump around
+       when fields inside them appear or disappear. */
+    dialog.modal { margin: 10vh auto auto; }
+    /* Selects draw their own chevron with room to the right, instead of the
+       browser's arrow pressed against the edge. */
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.5rem center;
+      background-size: 1.25rem;
+      padding-right: 2.25rem !important;
+    }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans antialiased min-h-screen flex flex-col">
+  <header class="bg-white border-b border-gray-200 sticky top-0 z-30 shadow-sm">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+      <div class="flex min-w-0 items-center gap-3 sm:gap-8">
+        <h1 class="text-xl font-extrabold tracking-tight text-gray-900">
+          <a href="/" class="flex items-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">
+            <img src="{{asset "logo.svg"}}" alt="" aria-hidden="true" class="w-6 h-6">
+            <span class="hidden sm:inline">Catchy</span><span class="sr-only sm:hidden">Catchy</span>
+          </a>
+        </h1>
+        <nav class="flex min-w-0 gap-1 sm:gap-2 overflow-x-auto">
+          <a href="/" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "hooks"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Hooks</a>
+          <a href="/channels" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "channels"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Channels</a>
+          <a href="/guards" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "guards"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Guards</a>
+          <a href="/keys" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "keys"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">API Keys</a>
+        </nav>
+      </div>
+      {{if .User}}
+      <div class="relative" id="user-menu-container">
+        <button type="button" class="flex items-center gap-2 text-sm text-gray-700 hover:bg-gray-50 px-2 py-1.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 transition-colors" id="user-menu-button" aria-expanded="false" aria-haspopup="true">
+          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-brand-100 to-brand-200 text-brand-800 flex items-center justify-center font-bold text-xs uppercase shadow-inner border border-brand-200">
+            {{slice .User.Email 0 1}}
+          </div>
+          <span class="hidden sm:inline font-medium">{{.User.Name}}</span>
+          <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <div class="absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 hidden z-50 transform opacity-0 scale-95 transition-all duration-100 origin-top-right" role="menu" aria-orientation="vertical" aria-labelledby="user-menu-button" tabindex="-1" id="user-menu-dropdown">
+          <div class="py-1" role="none">
+            <p class="px-4 py-2 text-sm text-gray-500 truncate" role="none">
+              Signed in as<br>
+              <span class="font-medium text-gray-900 truncate block">{{.User.Email}}</span>
+            </p>
+          </div>
+          <div class="py-1" role="none">
+            <a href="/auth/logout" class="group flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-gray-900" role="menuitem" tabindex="-1" id="user-menu-item-logout">
+              <svg class="mr-3 h-5 w-5 text-gray-400 group-hover:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Sign out
+            </a>
+          </div>
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </header>
+  <main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+    {{template "content" .}}
+  </main>
+  <footer class="border-t border-gray-200 py-6 text-center text-sm text-gray-500 mt-auto">
+    <p><a href="/openapi.yaml" class="hover:text-gray-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 rounded-sm">API Spec</a></p>
+    {{- $v := version}}
+    <p class="mt-1 text-xs text-gray-400">{{if eq $v "dev"}}dev{{else}}v{{$v}}{{end}}</p>
+  </footer>
+
+  <script>
+    // Dialogs: [data-dialog-open="id"] opens one, [data-dialog-close] closes
+    // the dialog it's in, and so does clicking the backdrop or pressing Esc.
+    document.addEventListener('click', (e) => {
+      const opener = e.target.closest('[data-dialog-open]');
+      if (opener) document.getElementById(opener.dataset.dialogOpen)?.showModal();
+      const closer = e.target.closest('[data-dialog-close]');
+      if (closer) closer.closest('dialog')?.close();
+      if (e.target.tagName === 'DIALOG') e.target.close();
+    });
+  </script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const button = document.getElementById('user-menu-button');
+      const dropdown = document.getElementById('user-menu-dropdown');
+
+      if (!button || !dropdown) return;
+
+      const toggleMenu = () => {
+        const isExpanded = button.getAttribute('aria-expanded') === 'true';
+        button.setAttribute('aria-expanded', !isExpanded);
+
+        if (isExpanded) {
+          dropdown.classList.add('opacity-0', 'scale-95');
+          dropdown.classList.remove('opacity-100', 'scale-100');
+          setTimeout(() => dropdown.classList.add('hidden'), 100);
+        } else {
+          dropdown.classList.remove('hidden');
+          // small delay to allow display block to apply before animating opacity
+          setTimeout(() => {
+            dropdown.classList.remove('opacity-0', 'scale-95');
+            dropdown.classList.add('opacity-100', 'scale-100');
+          }, 10);
+        }
+      };
+
+      button.addEventListener('click', toggleMenu);
+
+      // Close when clicking outside
+      document.addEventListener('click', (event) => {
+        if (!button.contains(event.target) && !dropdown.contains(event.target)) {
+          if (button.getAttribute('aria-expanded') === 'true') {
+            toggleMenu();
+          }
+        }
+      });
+    });
+  </script>
+</body>
+</html>

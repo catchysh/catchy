@@ -1,0 +1,66 @@
+{{define "content"}}
+<div class="mb-8">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Channels</h2>
+</div>
+
+{{if .Error}}
+<p class="mb-6 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{.Error}}</p>
+{{end}}
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+  <h3 class="text-sm font-semibold text-gray-900 mb-4">Create channel</h3>
+  <form method="POST" action="/channels" class="flex gap-3">
+    <input type="text" name="name" placeholder="Name (e.g. contact, stripe)" required maxlength="64" pattern="[a-z0-9]+([_\-][a-z0-9]+)*" aria-label="Channel name"
+      class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <button type="submit" class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Create</button>
+  </form>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+  {{if .Channels}}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm whitespace-nowrap">
+      <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
+        <tr>
+          <th class="px-6 py-4">Name</th>
+          <th class="px-6 py-4">Guards</th>
+          <th class="px-4 py-4 text-right">Pending</th>
+          <th class="px-4 py-4 text-right">Processed</th>
+          <th class="px-4 py-4 text-right">Failed</th>
+          <th class="px-4 py-4 text-right">Discarded</th>
+          <th class="px-6 py-4"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        {{range .Channels}}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-3">
+            <a href="{{.URL}}" class="font-medium text-gray-900 hover:text-brand-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm"><span class="text-brand-400">#</span>{{.Name}}</a>
+            {{if .Paused}}<span class="ml-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 text-xs font-medium">paused</span>{{end}}
+          </td>
+          <td class="px-6 py-3">
+            {{range .Guards}}<span class="mr-1 inline-block rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-xs">{{.}}</span>{{else}}<span class="text-gray-400">none</span>{{end}}
+          </td>
+          <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=pending" class="{{if .Stats.Pending}}font-medium text-amber-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Pending}}</a></td>
+          <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=processed" class="{{if .Stats.Processed}}text-gray-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Processed}}</a></td>
+          <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=failed" class="{{if .Stats.Failed}}font-medium text-red-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Failed}}</a></td>
+          <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=discarded" class="{{if .Stats.Discarded}}text-gray-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Discarded}}</a></td>
+          <td class="px-6 py-3 text-right">
+            <form method="POST" action="/channels/{{.Name}}/{{if .Paused}}resume{{else}}pause{{end}}" class="inline">
+              <input type="hidden" name="back" value="/channels">
+              <button type="submit" class="text-xs font-medium {{if .Paused}}text-brand-700 border-brand-200 hover:border-brand-300{{else}}text-amber-700 border-amber-200 hover:border-amber-300{{end}} border bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">{{if .Paused}}Resume{{else}}Pause{{end}}</button>
+            </form>
+            <a href="{{.URL}}" class="ml-1 text-xs font-medium text-gray-600 hover:text-gray-900 border border-gray-200 hover:border-gray-300 bg-white rounded-md px-2 py-1">Settings</a>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="px-6 py-12 text-center text-gray-500">
+    <p>No channels yet. Send a hook with <code class="text-gray-700">?channel=name</code>, or create one above.</p>
+  </div>
+  {{end}}
+</div>
+{{end}}

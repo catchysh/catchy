@@ -1,0 +1,21 @@
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.12
+    out: gen
+    opt:
+      - paths=source_relative
+  - remote: buf.build/connectrpc/go:v1.21.0
+    out: gen
+    opt:
+      - paths=source_relative
+  - remote: buf.build/community/sudorandom-connect-openapi:v0.28.0
+    out: public
+    opt:
+      - only-googleapi-http
+      - short-operation-ids
+      - trim-unused-types
+      - with-proto-names
+      - without-default-tags
+      - path=openapi.yaml
