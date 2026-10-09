@@ -1,0 +1,41 @@
+{{define "content"}}
+<a href="/guards" class="text-sm text-gray-500 hover:text-gray-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">&larr; Guards</a>
+<div class="mt-2 mb-6 flex flex-wrap items-center gap-3">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight">{{.Form.Name}}</h2>
+  <span class="text-sm text-gray-500">{{.Kind}}</span>
+</div>
+
+<div class="grid gap-6 grid-cols-1 lg:grid-cols-3">
+  <section class="lg:col-span-2 min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm p-6" aria-labelledby="settings-heading">
+    <h3 id="settings-heading" class="text-sm font-semibold text-gray-900">Settings</h3>
+    <p class="mt-0.5 mb-4 text-xs text-gray-500">Hooks are checked with the new settings as soon as you save.</p>
+    {{with .Error}}<p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{.}}</p>{{end}}
+    {{if .Saved}}<p class="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800" role="status">Saved.</p>{{end}}
+    <form method="POST" action="/guards/{{.Form.Name}}" id="guard-form">
+      {{template "guard-fields" .}}
+    </form>
+  </section>
+
+  <div class="min-w-0 space-y-6">
+    <section class="bg-white rounded-xl border border-gray-200 shadow-sm p-5" aria-labelledby="channels-heading">
+      <h3 id="channels-heading" class="text-sm font-semibold text-gray-900 mb-1">Channels</h3>
+      <p class="text-xs text-gray-500 mb-3">Hooks sent to these channels must pass it. Attach it on a channel's page.</p>
+      {{range .Channels}}<a href="/channels/{{.}}" class="mr-1 mb-1 inline-block rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-xs hover:bg-gray-200">#{{.}}</a>{{else}}<p class="text-sm text-gray-400">Not attached to any channel.</p>{{end}}
+    </section>
+
+    <section class="rounded-xl border border-red-200 bg-white p-5" aria-labelledby="danger-heading">
+      <h3 id="danger-heading" class="text-sm font-semibold text-red-700 mb-1">Danger zone</h3>
+      <p class="text-xs text-gray-500 mb-4">{{if .Channels}}Detach it from its channels before deleting it, so no channel loses its protection by accident.{{else}}Deletes the guard.{{end}}</p>
+      <form method="POST" action="/guards/{{.Form.Name}}/delete" onsubmit="return confirm('Delete guard {{.Form.Name}}?')">
+        <button type="submit" {{if .Channels}}disabled{{end}}
+          class="w-full text-sm font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 hover:bg-red-50 rounded-md px-4 py-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white">Delete guard</button>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+  {{template "guard-form-js"}}
+  {{template "guard-form-restore" .}}
+</script>
+{{end}}

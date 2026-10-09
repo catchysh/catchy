@@ -36,6 +36,28 @@
     /* Dialogs sit at a fixed spot near the top, so they don't jump around
        when fields inside them appear or disappear. */
     dialog.modal { margin: 10vh auto auto; }
+
+    /* Code fields: a highlighted copy of the text sits exactly behind a
+       transparent textarea, so typing works as usual and shows in color. The
+       two must share every metric that affects layout. */
+    .code-field { position: relative; }
+    .code-field > pre, .code-field > textarea {
+      margin: 0; padding: 0.5rem 0.75rem; border: 1px solid transparent; border-radius: 0.375rem;
+      font: 0.75rem/1.25rem ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      letter-spacing: normal; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+    }
+    .code-field > pre { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: #374151; background: #fff; }
+    .code-field > textarea { position: relative; display: block; width: 100%; color: transparent; background: transparent; caret-color: #111827; resize: vertical; border-color: #d1d5db; }
+    .code-field > textarea::selection { background: rgba(124, 58, 237, 0.2); color: transparent; }
+    .code-field > textarea:focus { outline: none; border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.35); }
+    .code-field > textarea::placeholder { color: #9ca3af; }
+    .tok-tpl { color: #7c3aed; background: rgba(124, 58, 237, 0.08); border-radius: 2px; }
+    .tok-key { color: #1d4ed8; }
+    .tok-str { color: #047857; }
+    .tok-lit { color: #b45309; }
+    .tok-com { color: #6b7280; font-style: italic; }
+    .tok-kw { color: #be185d; }
+    .tok-api { color: #7c3aed; }
     /* Selects draw their own chevron with room to the right, instead of the
        browser's arrow pressed against the edge. */
     select {
@@ -48,6 +70,35 @@
       padding-right: 2.25rem !important;
     }
   </style>
+  <script>
+    // Secret dropdowns ([data-secret-select]) list the secrets that are set.
+    // selectSecret picks one by name, adding it as "(not set)" when it isn't,
+    // and the form's [data-secret-hint] says how to set it.
+    const syncSecret = (select) => {
+      const opt = select.selectedOptions[0];
+      const unset = !select.disabled && opt && 'unset' in opt.dataset;
+      select.toggleAttribute('data-unset', unset);
+      const hint = select.form?.querySelector('[data-secret-hint]');
+      if (!hint) return;
+      hint.hidden = !unset;
+      if (unset) hint.textContent = `${opt.value} isn't set: add CATCHY_SECRET_${opt.value} to the environment and restart Catchy. You can save now; it won't work until then.`;
+    };
+    window.selectSecret = (select, name) => {
+      select.querySelectorAll('option[data-unset]').forEach((o) => { if (o.value !== name) o.remove(); });
+      if (name && ![...select.options].some((o) => o.value === name)) {
+        const o = new Option(`${name} (not set)`, name);
+        o.dataset.unset = '';
+        select.add(o);
+      }
+      select.value = name || '';
+      syncSecret(select);
+    };
+    document.addEventListener('DOMContentLoaded', () => document.querySelectorAll('[data-secret-select]').forEach((s) => {
+      s.addEventListener('change', () => syncSecret(s));
+      syncSecret(s);
+    }));
+
+  </script>
 </head>
 <body class="bg-gray-50 text-gray-900 font-sans antialiased min-h-screen flex flex-col">
   <header class="bg-white border-b border-gray-200 sticky top-0 z-30 shadow-sm">
@@ -63,6 +114,7 @@
           <a href="/" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "hooks"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Hooks</a>
           <a href="/channels" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "channels"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Channels</a>
           <a href="/guards" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "guards"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Guards</a>
+          <a href="/handlers" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "handlers"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Handlers</a>
           <a href="/keys" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "keys"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">API Keys</a>
         </nav>
       </div>
@@ -99,6 +151,14 @@
     </div>
   </header>
   <main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+    {{with missingSecrets}}
+    <div class="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+      <p class="font-medium">{{len .}} {{if eq (len .) 1}}secret is{{else}}secrets are{{end}} used but not set, so hooks and handlers that need {{if eq (len .) 1}}it{{else}}them{{end}} fail:</p>
+      <ul class="mt-1 space-y-0.5">
+        {{range .}}<li><code>{{.Name}}</code> <span class="text-red-700">({{range $i, $u := .UsedBy}}{{if $i}}, {{end}}{{$u}}{{end}})</span>: add <code>CATCHY_SECRET_{{.Name}}</code> to the environment and restart.</li>{{end}}
+      </ul>
+    </div>
+    {{end}}
     {{template "content" .}}
   </main>
   <footer class="border-t border-gray-200 py-6 text-center text-sm text-gray-500 mt-auto">
@@ -108,6 +168,79 @@
   </footer>
 
   <script>
+    // Code fields: <textarea data-highlight> gets JSON and template
+    // highlighting, drawn behind it as you type.
+    (() => {
+      const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const tpl = (s) => esc(s).replace(/\{\{[\s\S]*?\}\}/g, (m) => `<span class="tok-tpl">${m}</span>`);
+      const token = /(\{\{[\s\S]*?\}\})|("(?:\\.|[^"\\])*")(\s*:)?|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\btrue\b|\bfalse\b|\bnull\b)/g;
+      const highlightJSON = (text) => {
+        let out = '', last = 0;
+        for (const m of text.matchAll(token)) {
+          out += esc(text.slice(last, m.index));
+          if (m[1]) out += `<span class="tok-tpl">${esc(m[1])}</span>`;
+          else if (m[2]) out += `<span class="${m[3] ? 'tok-key' : 'tok-str'}">${tpl(m[2])}</span>` + (m[3] || '');
+          else out += `<span class="tok-lit">${esc(m[4])}</span>`;
+          last = m.index + m[0].length;
+        }
+        // A trailing newline needs a character after it to take up a line.
+        return out + esc(text.slice(last)) + '\n';
+      };
+      // JavaScript, for script handlers: comments, strings (with ${…} in
+      // template strings), numbers and literals, keywords, and the names a
+      // script gets (hook, vars, secrets, fetch, console).
+      const jsToken = new RegExp([
+        /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))/.source,
+        /(`(?:\\[\s\S]|[^`\\])*`?|"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)/.source,
+        /(\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b(?:true|false|null|undefined)\b)/.source,
+        /(\b(?:const|let|var|if|else|return|await|async|function|throw|new|try|catch|finally|for|of|in|while|do|break|continue|switch|case|default|typeof|instanceof|class)\b)/.source,
+        /(\b(?:hook|vars|secrets|fetch|console|JSON)\b)/.source,
+      ].join('|'), 'g');
+      const jsString = (s) => s[0] !== '`' ? esc(s)
+        : esc(s).replace(/\$\{[^}]*\}/g, (m) => `<span class="tok-api">${m}</span>`);
+      const highlightJS = (text) => {
+        let out = '', last = 0;
+        for (const m of text.matchAll(jsToken)) {
+          out += esc(text.slice(last, m.index));
+          if (m[1]) out += `<span class="tok-com">${esc(m[1])}</span>`;
+          else if (m[2]) out += `<span class="tok-str">${jsString(m[2])}</span>`;
+          else if (m[3]) out += `<span class="tok-lit">${esc(m[3])}</span>`;
+          else if (m[4]) out += `<span class="tok-kw">${esc(m[4])}</span>`;
+          else out += `<span class="tok-api">${esc(m[5])}</span>`;
+          last = m.index + m[0].length;
+        }
+        return out + esc(text.slice(last)) + '\n';
+      };
+      document.querySelectorAll('textarea[data-highlight]').forEach((ta) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'code-field';
+        const pre = document.createElement('pre');
+        pre.setAttribute('aria-hidden', 'true');
+        ta.className = '';
+        ta.parentNode.insertBefore(wrap, ta);
+        wrap.append(pre, ta);
+        const highlight = ta.dataset.highlight === 'js' ? highlightJS : highlightJSON;
+        const sync = () => { pre.innerHTML = highlight(ta.value); pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; };
+        ta.addEventListener('input', sync);
+        ta.addEventListener('scroll', sync);
+        // Tab indents by two spaces. Esc first lets Tab leave the field, as
+        // usual, for keyboard users.
+        let tabLeaves = false;
+        ta.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') { tabLeaves = true; return; }
+          if (e.key !== 'Tab' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || tabLeaves) return;
+          e.preventDefault();
+          ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+          sync();
+        });
+        ta.addEventListener('focus', () => { tabLeaves = false; });
+        // Scripts that set .value directly (presets) don't fire input.
+        const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+        Object.defineProperty(ta, 'value', { get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); sync(); } });
+        sync();
+      });
+    })();
+
     // Dialogs: [data-dialog-open="id"] opens one, [data-dialog-close] closes
     // the dialog it's in, and so does clicking the backdrop or pressing Esc.
     document.addEventListener('click', (e) => {
@@ -117,6 +250,24 @@
       if (closer) closer.closest('dialog')?.close();
       if (e.target.tagName === 'DIALOG') e.target.close();
     });
+
+    // Popovers (<details data-popover>) close on a click outside or Esc.
+    const closePopovers = (except) => document.querySelectorAll('details[data-popover][open]')
+      .forEach((d) => { if (d !== except) d.open = false; });
+    document.addEventListener('click', (e) => closePopovers(e.target.closest('details[data-popover]')));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePopovers(); });
+    // A popover that would run off the right edge opens leftward instead.
+    document.addEventListener('toggle', (e) => {
+      const d = e.target;
+      if (!d.matches?.('details[data-popover]') || !d.open) return;
+      const panel = d.querySelector(':scope > summary + *');
+      if (!panel) return;
+      panel.style.left = panel.style.right = '';
+      if (panel.getBoundingClientRect().right > document.documentElement.clientWidth - 8) {
+        panel.style.left = 'auto';
+        panel.style.right = '0';
+      }
+    }, true);
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
@@ -157,3 +308,54 @@
   </script>
 </body>
 </html>
+
+{{define "status-badge"}}
+{{- if eq . "pending"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>pending</span>
+{{- else if eq . "handled"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>handled</span>
+{{- else if eq . "failed"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true"></span>failed</span>
+{{- else}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-600 border border-gray-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-gray-400" aria-hidden="true"></span>{{.}}</span>
+{{- end}}
+{{end}}
+
+{{define "status-dot"}}
+{{- if eq . "pending"}}<span class="shrink-0 w-2 h-2 rounded-full bg-amber-500" title="pending"></span><span class="sr-only">pending</span>
+{{- else if eq . "handled"}}<span class="shrink-0 w-2 h-2 rounded-full bg-emerald-500" title="handled"></span><span class="sr-only">handled</span>
+{{- else if eq . "failed"}}<span class="shrink-0 w-2 h-2 rounded-full bg-red-500" title="failed"></span><span class="sr-only">failed</span>
+{{- else}}<span class="shrink-0 w-2 h-2 rounded-full bg-gray-300" title="{{.}}"></span><span class="sr-only">{{.}}</span>
+{{- end}}
+{{end}}
+
+{{/* secretOptions lists the secrets that are set as <option>s, plus the
+     selected one marked "(not set)" when the environment doesn't have it. */}}
+{{define "secretOptions"}}
+{{- range .Names}}<option value="{{.}}"{{if eq . $.Selected}} selected{{end}}>{{.}}</option>{{end}}
+{{- if and .Selected (not .Set)}}<option value="{{.Selected}}" selected data-unset>{{.Selected}} (not set)</option>{{end}}
+{{- end}}
+
+{{/* placeholders is a "?" that opens a reference of what handler
+     templates can use, including the variables and secrets that are set. */}}
+{{define "placeholders"}}
+<details class="relative" data-popover>
+  <summary aria-label="What templates can use" title="What templates can use"
+    class="list-none [&::-webkit-details-marker]:hidden grid place-items-center w-5 h-5 rounded-full border border-gray-300 text-[11px] font-semibold text-gray-500 cursor-pointer hover:text-gray-900 hover:border-gray-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">?</summary>
+  <div class="absolute right-0 z-20 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-4 text-xs text-gray-600 shadow-lg space-y-3">
+    <table class="w-full">
+      <tbody class="align-top [&_td]:py-0.5 [&_td:first-child]:pr-3 [&_td:first-child]:whitespace-nowrap">
+        <tr><td><code>{{"{{.Payload.email}}"}}</code></td><td>a field; nested with dots; missing is empty</td></tr>
+        <tr><td><code>{{"{{.Text}}"}}</code></td><td>all fields, one per line</td></tr>
+        <tr><td><code>{{"{{json .Payload}}"}}</code></td><td>the payload as JSON</td></tr>
+        <tr><td><code>{{"{{.Channel}}"}}</code>, <code>{{"{{.URL}}"}}</code></td><td>the channel; the hook in the dashboard</td></tr>
+        <tr><td><code>{{"{{.Vars.NAME}}"}}</code></td><td>a <code>CATCHY_VAR_NAME</code> environment variable</td></tr>
+        <tr><td><code>{{"{{.Secrets.NAME}}"}}</code></td><td>a <code>CATCHY_SECRET_NAME</code> environment variable; also in the URL and headers</td></tr>
+      </tbody>
+    </table>
+    <p>In a JSON body, put placeholders inside strings and they're escaped for you. <code>from</code>, <code>to</code>, <code>cc</code>, and <code>bcc</code> can't come from the hook.</p>
+    {{if or .Vars .Secrets}}
+    <p class="border-t border-gray-100 pt-3">Set now:
+      {{- range $i, $n := .VarNames}}{{if $i}},{{end}} <code title="{{index $.Vars $n}}">{{"{{"}}.Vars.{{$n}}{{"}}"}}</code>{{end}}
+      {{- range $i, $n := .SecretNames}}{{if or $i $.Vars}},{{end}} <code>{{"{{"}}.Secrets.{{$n}}{{"}}"}}</code>{{end}}
+    </p>
+    {{end}}
+  </div>
+</details>
+{{end}}

@@ -13,65 +13,38 @@ import (
 // Guard is a configured check that hooks must pass on the channels it's
 // attached to. What Type and Scheme mean is up to internal/guard.
 type Guard struct {
-	Name       string
-	Type       string
-	Scheme     string // for signature guards: how the signature is checked
-	Options    string // JSON object of scheme settings
-	Secret     string // plaintext; only set by ChannelPolicy, for checking hooks
-	SecretHint string // masked form of the secret, safe to show
-	Channels   []string
-	CreatedAt  time.Time
+	Name      string
+	Type      string
+	Scheme    string // for signature guards: how the signature is checked
+	Options   string // JSON object of scheme settings
+	Secret    string // the name of the secret it checks with, if any
+	Channels  []string
+	CreatedAt time.Time
 }
 
 // ErrGuardInUse is returned when deleting a guard that's still attached to
 // channels.
 var ErrGuardInUse = errors.New("guard is still attached to channels")
 
-// secretHint masks a secret for display: its last four characters.
-func secretHint(secret string) string {
-	switch {
-	case secret == "":
-		return ""
-	case len(secret) < 12:
-		return "…"
-	default:
-		return "…" + secret[len(secret)-4:]
-	}
-}
-
-func (d *DB) sealSecret(secret string) (string, error) {
-	if secret == "" {
-		return "", nil
-	}
-	if d.sealer == nil {
-		return "", errors.New("can't store a secret: ENCRYPTION_KEY isn't set")
-	}
-	return d.sealer.Seal(secret)
-}
-
-const guardColumns = `name, type, scheme, options, secret_hint, created_at`
+const guardColumns = `name, type, scheme, options, secret, created_at`
 
 func scanGuard(row interface{ Scan(...any) error }) (*Guard, error) {
 	var g Guard
-	if err := row.Scan(&g.Name, &g.Type, &g.Scheme, &g.Options, &g.SecretHint, &g.CreatedAt); err != nil {
+	if err := row.Scan(&g.Name, &g.Type, &g.Scheme, &g.Options, &g.Secret, &g.CreatedAt); err != nil {
 		return nil, err
 	}
 	g.Channels = []string{}
 	return &g, nil
 }
 
-// CreateGuard stores g, sealing its secret, and returns it.
+// CreateGuard stores g and returns it.
 func (d *DB) CreateGuard(ctx context.Context, g Guard) (*Guard, error) {
-	sealed, err := d.sealSecret(g.Secret)
-	if err != nil {
-		return nil, err
-	}
 	if g.Options == "" {
 		g.Options = "{}"
 	}
-	query := d.q(`INSERT INTO guards (name, type, scheme, options, secret, secret_hint, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`)
-	if _, err := d.sql.ExecContext(ctx, query, g.Name, g.Type, g.Scheme, g.Options, sealed, secretHint(g.Secret), time.Now().UTC()); err != nil {
+	query := d.q(`INSERT INTO guards (name, type, scheme, options, secret, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
+	if _, err := d.sql.ExecContext(ctx, query, g.Name, g.Type, g.Scheme, g.Options, g.Secret, time.Now().UTC()); err != nil {
 		if d.isUniqueViolation(err) {
 			return nil, fmt.Errorf("guard already exists: %s", g.Name)
 		}
@@ -80,8 +53,7 @@ func (d *DB) CreateGuard(ctx context.Context, g Guard) (*Guard, error) {
 	return d.GetGuard(ctx, g.Name)
 }
 
-// GetGuard returns a guard with the channels it's attached to, without its
-// secret.
+// GetGuard returns a guard with the channels it's attached to.
 func (d *DB) GetGuard(ctx context.Context, name string) (*Guard, error) {
 	g, err := scanGuard(d.sql.QueryRowContext(ctx, d.q(`SELECT `+guardColumns+` FROM guards WHERE name = ?`), name))
 	if err != nil {
@@ -105,8 +77,7 @@ func (d *DB) GetGuard(ctx context.Context, name string) (*Guard, error) {
 	return g, rows.Err()
 }
 
-// ListGuards returns all guards with their channels, sorted by name, without
-// secrets.
+// ListGuards returns all guards with their channels, sorted by name.
 func (d *DB) ListGuards(ctx context.Context) ([]Guard, error) {
 	rows, err := d.sql.QueryContext(ctx, `SELECT `+guardColumns+` FROM guards ORDER BY name`)
 	if err != nil {
@@ -143,20 +114,21 @@ func (d *DB) ListGuards(ctx context.Context) ([]Guard, error) {
 	return guards, nil
 }
 
-// RotateGuardSecret replaces a guard's secret and returns the guard.
-func (d *DB) RotateGuardSecret(ctx context.Context, name, secret string) (*Guard, error) {
-	if _, err := d.GetGuard(ctx, name); err != nil {
-		return nil, err
+// UpdateGuard replaces a guard's type, scheme, options, and secret. Hooks
+// are checked with the new settings from then on.
+func (d *DB) UpdateGuard(ctx context.Context, g Guard) (*Guard, error) {
+	if g.Options == "" {
+		g.Options = "{}"
 	}
-	sealed, err := d.sealSecret(secret)
+	query := d.q(`UPDATE guards SET type = ?, scheme = ?, options = ?, secret = ? WHERE name = ?`)
+	result, err := d.sql.ExecContext(ctx, query, g.Type, g.Scheme, g.Options, g.Secret, g.Name)
 	if err != nil {
-		return nil, err
-	}
-	query := d.q(`UPDATE guards SET secret = ?, secret_hint = ? WHERE name = ?`)
-	if _, err := d.sql.ExecContext(ctx, query, sealed, secretHint(secret), name); err != nil {
 		return nil, fmt.Errorf("updating guard: %w", err)
 	}
-	return d.GetGuard(ctx, name)
+	if n, _ := result.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("guard not found: %s", g.Name)
+	}
+	return d.GetGuard(ctx, g.Name)
 }
 
 // DeleteGuard deletes a guard. It refuses with ErrGuardInUse while the guard
@@ -238,8 +210,8 @@ func (d *DB) SetChannelGuards(ctx context.Context, channel string, guards []stri
 }
 
 // ChannelPolicy returns what applies to a hook sent to the channel: whether
-// it exists, whether it's paused, and its guards with their secrets opened. A
-// channel that doesn't exist yet has no guards.
+// it exists, whether it's paused, and its guards. A channel that doesn't
+// exist yet has no guards.
 func (d *DB) ChannelPolicy(ctx context.Context, channel string) (exists, paused bool, guards []Guard, err error) {
 	var pausedAt sql.NullTime
 	err = d.sql.QueryRowContext(ctx, d.q(`SELECT paused_at FROM channels WHERE name = ?`), channel).Scan(&pausedAt)
@@ -258,17 +230,8 @@ func (d *DB) ChannelPolicy(ctx context.Context, channel string) (exists, paused 
 	defer rows.Close()
 	for rows.Next() {
 		var g Guard
-		var sealed string
-		if err := rows.Scan(&g.Name, &g.Type, &g.Scheme, &g.Options, &sealed); err != nil {
+		if err := rows.Scan(&g.Name, &g.Type, &g.Scheme, &g.Options, &g.Secret); err != nil {
 			return false, false, nil, fmt.Errorf("scanning guard: %w", err)
-		}
-		if sealed != "" {
-			if d.sealer == nil {
-				return false, false, nil, fmt.Errorf("guard %s: can't open its secret: ENCRYPTION_KEY isn't set", g.Name)
-			}
-			if g.Secret, err = d.sealer.Open(sealed); err != nil {
-				return false, false, nil, fmt.Errorf("guard %s: %w", g.Name, err)
-			}
 		}
 		guards = append(guards, g)
 	}

@@ -11,6 +11,7 @@ import (
 
 	catchyv1 "github.com/catchysh/catchy/gen/catchy/v1"
 	"github.com/catchysh/catchy/gen/catchy/v1/catchyv1connect"
+	"github.com/catchysh/catchy/internal/auth"
 	"github.com/catchysh/catchy/internal/db"
 	"github.com/catchysh/catchy/internal/payload"
 )
@@ -40,7 +41,7 @@ func dbError(err error) error {
 	return connect.NewError(connect.CodeInternal, err)
 }
 
-func hookProto(h *db.Hook) (*catchyv1.Hook, error) {
+func hookProto(h *db.Hook, events []db.Event) (*catchyv1.Hook, error) {
 	p := &catchyv1.Hook{
 		Id:          h.ID,
 		Channel:     h.Channel,
@@ -51,7 +52,7 @@ func hookProto(h *db.Hook) (*catchyv1.Hook, error) {
 		ContentType: h.ContentType,
 		Body:        h.Body,
 		Ip:          h.IP,
-		Failures:    make([]*catchyv1.Failure, 0, len(h.Failures)),
+		Events:      make([]*catchyv1.Event, 0, len(events)),
 		CreatedAt:   timestamppb.New(h.CreatedAt),
 	}
 	if fields := payload.Decode(h.ContentType, h.Body); fields != nil {
@@ -61,8 +62,8 @@ func hookProto(h *db.Hook) (*catchyv1.Hook, error) {
 		}
 		p.Payload = s
 	}
-	for _, f := range h.Failures {
-		p.Failures = append(p.Failures, &catchyv1.Failure{At: timestamppb.New(f.At), Message: f.Message})
+	for _, e := range events {
+		p.Events = append(p.Events, &catchyv1.Event{Kind: e.Kind, Actor: e.Actor, Message: e.Message, CreatedAt: timestamppb.New(e.CreatedAt)})
 	}
 	if h.FinalizedAt != nil {
 		p.FinalizedAt = timestamppb.New(*h.FinalizedAt)
@@ -77,7 +78,7 @@ func channelProto(c *db.Channel) *catchyv1.Channel {
 		Guards: c.Guards,
 		Stats: &catchyv1.ChannelStats{
 			Pending:   c.Stats.Pending,
-			Processed: c.Stats.Processed,
+			Handled:   c.Stats.Handled,
 			Failed:    c.Stats.Failed,
 			Discarded: c.Stats.Discarded,
 		},
@@ -99,9 +100,17 @@ func (s *Service) ListHooks(ctx context.Context, req *connect.Request[catchyv1.L
 	if err != nil {
 		return nil, dbError(err)
 	}
+	ids := make([]string, len(hooks))
+	for i, h := range hooks {
+		ids[i] = h.ID
+	}
+	events, err := s.db.HookEvents(ctx, ids)
+	if err != nil {
+		return nil, dbError(err)
+	}
 	resp := &catchyv1.ListHooksResponse{Hooks: make([]*catchyv1.Hook, 0, len(hooks))}
 	for _, h := range hooks {
-		p, err := hookProto(&h)
+		p, err := hookProto(&h, events[h.ID])
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
@@ -115,31 +124,15 @@ func (s *Service) GetHook(ctx context.Context, req *connect.Request[catchyv1.Get
 	if err != nil {
 		return nil, dbError(err)
 	}
-	p, err := hookProto(h)
+	p, err := s.hookProto(ctx, h)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 	return connect.NewResponse(&catchyv1.GetHookResponse{Hook: p}), nil
 }
 
-func (s *Service) ProcessHook(ctx context.Context, req *connect.Request[catchyv1.ProcessHookRequest]) (*connect.Response[catchyv1.ProcessHookResponse], error) {
-	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusProcessed, "")
-	if err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&catchyv1.ProcessHookResponse{Hook: h}), nil
-}
-
-func (s *Service) FailHook(ctx context.Context, req *connect.Request[catchyv1.FailHookRequest]) (*connect.Response[catchyv1.FailHookResponse], error) {
-	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusFailed, req.Msg.Message)
-	if err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&catchyv1.FailHookResponse{Hook: h}), nil
-}
-
 func (s *Service) DiscardHook(ctx context.Context, req *connect.Request[catchyv1.DiscardHookRequest]) (*connect.Response[catchyv1.DiscardHookResponse], error) {
-	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusDiscarded, "")
+	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusDiscarded)
 	if err != nil {
 		return nil, err
 	}
@@ -147,19 +140,29 @@ func (s *Service) DiscardHook(ctx context.Context, req *connect.Request[catchyv1
 }
 
 func (s *Service) RetryHook(ctx context.Context, req *connect.Request[catchyv1.RetryHookRequest]) (*connect.Response[catchyv1.RetryHookResponse], error) {
-	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusPending, "")
+	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusPending)
 	if err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&catchyv1.RetryHookResponse{Hook: h}), nil
 }
 
-func (s *Service) setHookStatus(ctx context.Context, id, status, message string) (*catchyv1.Hook, error) {
-	h, err := s.db.SetHookStatus(ctx, id, status, message)
+// setHookStatus sets a hook's status as the API key making the request.
+func (s *Service) setHookStatus(ctx context.Context, id, status string) (*catchyv1.Hook, error) {
+	h, err := s.db.SetHookStatus(ctx, id, status, auth.ActorFromContext(ctx), "")
 	if err != nil {
 		return nil, dbError(err)
 	}
-	p, err := hookProto(h)
+	return s.hookProto(ctx, h)
+}
+
+// hookProto converts a hook with its events.
+func (s *Service) hookProto(ctx context.Context, h *db.Hook) (*catchyv1.Hook, error) {
+	events, err := s.db.HookEvents(ctx, []string{h.ID})
+	if err != nil {
+		return nil, dbError(err)
+	}
+	p, err := hookProto(h, events[h.ID])
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

@@ -1,6 +1,6 @@
 {{define "content"}}
 <div class="mb-8">
-  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Guards</h2>
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Handlers</h2>
 </div>
 
 {{if and .Error (not .Form.Restore)}}
@@ -10,8 +10,8 @@
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
   <div class="flex items-start justify-between gap-4 mb-4">
     <div>
-      <h3 class="text-sm font-semibold text-gray-900">Create guard</h3>
-      <p class="mt-0.5 text-xs text-gray-500" id="preset-note">Set it up below, or start from a preset.</p>
+      <h3 class="text-sm font-semibold text-gray-900">Create handler</h3>
+      <p class="mt-0.5 text-xs text-gray-500" id="preset-note">Where a channel's hooks are sent. Set it up below, or start from a preset.</p>
     </div>
     <button type="button" data-dialog-open="presets" class="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
       <svg aria-hidden="true" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" /></svg>
@@ -21,35 +21,39 @@
   {{if .Form.Restore}}{{with .Error}}
   <p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{.}}</p>
   {{end}}{{end}}
-  <form method="POST" action="/guards" id="guard-form">
-    <input type="hidden" name="preset" id="guard-preset" value="{{.Form.Preset}}">
-    {{template "guard-fields" .}}
+  <form method="POST" action="/handlers" id="dst-form">
+    <input type="hidden" name="preset" id="dst-preset" value="{{.Form.Preset}}">
+    {{template "handler-fields" .}}
   </form>
 </div>
 
 <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-  {{if .Guards}}
+  {{if .Handlers}}
   <div class="overflow-x-auto">
     <table class="w-full text-left text-sm">
       <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
         <tr>
           <th class="px-6 py-4">Name</th>
           <th class="px-6 py-4">Type</th>
-          <th class="px-6 py-4">Secret</th>
+          <th class="px-6 py-4">Target</th>
+          <th class="px-6 py-4 hidden md:table-cell">Secrets</th>
           <th class="px-6 py-4 hidden sm:table-cell">Channels</th>
+          <th class="px-6 py-4 text-right">Last attempt</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-200">
-        {{range .Guards}}
+        {{range .Handlers}}
         <tr class="relative hover:bg-gray-50 focus-within:bg-brand-50 transition-colors">
-          {{/* The name links to the guard's page and covers the row. */}}
-          <td class="px-6 py-3 whitespace-nowrap"><a href="/guards/{{.Name}}" class="font-medium text-gray-900 focus:outline-none after:absolute after:inset-0">{{.Name}}</a></td>
-          <td class="px-6 py-3 text-gray-600">{{.Kind}}</td>
-          <td class="px-6 py-3">
-            {{if .Secret}}<code class="px-1.5 py-0.5 rounded text-xs border {{if .SecretSet}}bg-gray-100 text-gray-600 border-gray-200{{else}}bg-red-50 text-red-700 border-red-200" title="Not set: add CATCHY_SECRET_{{.Secret}} to the environment{{end}}">{{.Secret}}</code>{{else}}<span class="text-gray-400">—</span>{{end}}
-          </td>
+          {{/* The name links to the handler's page and covers the row. */}}
+          <td class="px-6 py-3 whitespace-nowrap"><a href="/handlers/{{.Name}}" class="font-medium text-gray-900 focus:outline-none after:absolute after:inset-0">{{.Name}}</a></td>
+          <td class="px-6 py-3"><span class="rounded bg-gray-100 border border-gray-200 px-1.5 py-0.5 font-mono text-xs text-gray-600">{{.Type}}</span></td>
+          <td class="px-6 py-3 text-gray-600 max-w-xs truncate" title="{{.Target}}">{{.Target}}</td>
+          <td class="px-6 py-3 hidden md:table-cell">{{$missing := .Missing}}{{range .Secrets}}<code class="mr-1 inline-block px-1.5 py-0.5 rounded text-xs border {{if has $missing .}}bg-red-50 text-red-700 border-red-200" title="Not set: add CATCHY_SECRET_{{.}} to the environment{{else}}bg-gray-100 text-gray-600 border-gray-200{{end}}">{{.}}</code>{{else}}<span class="text-gray-400">—</span>{{end}}</td>
           <td class="px-6 py-3 hidden sm:table-cell">
             {{range .Channels}}<a href="/channels/{{.}}" class="relative z-10 mr-1 inline-block rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-xs hover:bg-gray-200">#{{.}}</a>{{else}}<span class="text-gray-400">—</span>{{end}}
+          </td>
+          <td class="px-6 py-3 whitespace-nowrap text-right text-xs">
+            {{with .Last}}<span class="{{if eq .Status "succeeded"}}text-emerald-700{{else}}text-red-700{{end}}" title="{{.At}}{{with .Error}}: {{.}}{{end}}">{{if eq .Status "succeeded"}}&#10003;{{else}}&#10007;{{end}} {{.Ago}}</span>{{else}}<span class="text-gray-400">never</span>{{end}}
           </td>
         </tr>
         {{end}}
@@ -57,7 +61,7 @@
     </table>
   </div>
   {{else}}
-  <div class="px-6 py-12 text-center text-gray-500"><p>No guards yet. Create one above.</p></div>
+  <div class="px-6 py-12 text-center text-gray-500"><p>No handlers yet. Create one above, then attach it to channels.</p></div>
   {{end}}
 </div>
 
@@ -78,9 +82,10 @@
       <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">{{.Name}}</h4>
       <div class="grid gap-2 sm:grid-cols-2">
         {{range .Presets}}
-        <button type="button" data-preset="{{.Name}}" data-label="{{.Label}}" data-description="{{.Description}}"
-          data-type="{{.Type}}" data-scheme="{{.Scheme}}" data-field="{{.Options.Field}}" data-header="{{.Options.Header}}" data-algorithm="{{.Options.Algorithm}}"
-          data-encoding="{{.Options.Encoding}}" data-prefix="{{.Options.Prefix}}" data-min-score="{{if .Options.MinScore}}{{.Options.MinScore}}{{end}}" data-secret="{{.Secret}}"
+        <button type="button" data-preset="{{.Name}}" data-label="{{.Label}}" data-description="{{.Description}}" data-type="{{.Type}}"
+          data-endpoint="{{.Options.URL}}" data-endpoint-hint="{{.URLHint}}"
+          data-method="{{.Options.Method}}" data-headers="{{.Options.Headers}}" data-content-type="{{.Options.ContentType}}"
+          data-sign-with="{{.Options.SignWith}}" data-body="{{.Options.Body}}" data-script="{{.Options.Script}}"
           class="text-left rounded-lg border border-gray-200 px-4 py-3 hover:border-brand-300 hover:bg-brand-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
           <span class="block text-sm font-medium text-gray-900">{{.Label}}</span>
           <span class="block mt-0.5 text-xs text-gray-500">{{.Description}}</span>
@@ -93,40 +98,41 @@
 </dialog>
 
 <script>
-  {{template "guard-form-js"}}
+  {{template "handler-form-js"}}
   const note = document.getElementById('preset-note');
   const defaultNote = note.textContent;
 
-  const forgetPreset = () => { field('preset').value = ''; note.textContent = defaultNote; };
-  for (const id of ['type', 'scheme']) field(id).addEventListener('change', () => { forgetPreset(); sync(); });
-
-  // A preset fills in the form and closes the dialog.
   const presets = document.getElementById('presets');
-  presets.querySelectorAll('[data-preset]').forEach((card) => card.addEventListener('click', () => {
-    const o = card.dataset;
+  const apply = (o) => {
     field('preset').value = o.preset;
     field('type').value = o.type;
-    sync();
-    if (o.scheme) field('scheme').value = o.scheme;
-    field('field').value = o.field;
-    field('header').value = o.header;
-    field('prefix').value = o.prefix;
-    field('algorithm').value = o.algorithm || 'sha256';
-    field('encoding').value = o.encoding || 'hex';
-    field('min-score').value = o.minScore;
-    selectSecret(field('secret'), o.secret);
-    sync();
+    // (data-endpoint, not data-url: templates escape attributes named *url*
+    // as links.)
+    field('url').value = o.endpoint;
+    field('url').placeholder = o.endpointHint || 'https://example.com/hooks';
+    field('method').value = o.method || 'POST';
+    field('headers').value = o.headers;
+    field('content-type').value = o.contentType;
+    selectSecret(field('sign-with'), o.signWith);
+    field('body').value = o.body;
+    field('script').value = o.script;
     note.textContent = o.label + ': ' + o.description;
+    syncType();
+  };
+  presets.querySelectorAll('[data-preset]').forEach((card) => card.addEventListener('click', () => {
+    apply(card.dataset);
     presets.close();
     field('name').focus();
   }));
 
-  // After a failed create, refill the form with what was entered.
   {{if .Form.Restore}}
-  {{template "guard-form-restore" .}}
+  // After a failed create, keep what was entered.
   const restored = presets.querySelector(`[data-preset="${field('preset').value}"]`);
   if (restored) note.textContent = restored.dataset.label + ': ' + restored.dataset.description;
+  if ({{.Form.Method}}) field('method').value = {{.Form.Method}};
+  syncType();
+  {{else}}
+  apply(presets.querySelector('[data-preset="resend"]').dataset);
   {{end}}
-  sync();
 </script>
 {{end}}

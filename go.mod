@@ -7,6 +7,7 @@ require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/validate v0.7.0
 	connectrpc.com/vanguard v0.4.0
+	github.com/dop251/goja v0.0.0-20261008222547-e9f698900731
 	github.com/google/gnostic v0.7.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
@@ -25,8 +26,11 @@ require (
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/dlclark/regexp2/v2 v2.8.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
+	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

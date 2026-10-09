@@ -18,7 +18,10 @@ const (
 
 type contextKey string
 
-const userIDKey contextKey = "user_id"
+const (
+	userIDKey contextKey = "user_id"
+	actorKey  contextKey = "actor"
+)
 
 type SessionManager struct {
 	secret []byte
@@ -72,6 +75,18 @@ func (s *SessionManager) GetUserID(r *http.Request) (string, bool) {
 // ContextWithUserID adds the user ID to the context.
 func ContextWithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userIDKey, userID)
+}
+
+// ContextWithActor adds who is making the request, as recorded in a hook's
+// events: "api:" and the API key's label.
+func ContextWithActor(ctx context.Context, actor string) context.Context {
+	return context.WithValue(ctx, actorKey, actor)
+}
+
+// ActorFromContext returns who is making the request, or "".
+func ActorFromContext(ctx context.Context) string {
+	actor, _ := ctx.Value(actorKey).(string)
+	return actor
 }
 
 // UserIDFromContext retrieves the user ID from the context.

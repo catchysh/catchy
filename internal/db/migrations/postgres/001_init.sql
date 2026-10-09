@@ -26,15 +26,15 @@ CREATE TABLE IF NOT EXISTS channels (
 );
 
 -- A guard is a configured check hooks must pass (see internal/guard). secret
--- is sealed with ENCRYPTION_KEY; secret_hint is a short masked form to show.
--- options is a JSON object of scheme settings, e.g. the signature header.
+-- is the name of the secret it checks with, a CATCHY_SECRET_ environment
+-- variable. options is a JSON object of
+-- scheme settings, e.g. the signature header.
 CREATE TABLE IF NOT EXISTS guards (
     name TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     scheme TEXT NOT NULL DEFAULT '',
     options TEXT NOT NULL DEFAULT '{}',
     secret TEXT NOT NULL DEFAULT '',
-    secret_hint TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -62,7 +62,6 @@ CREATE TABLE IF NOT EXISTS hooks (
     content_type TEXT NOT NULL DEFAULT '',
     body BYTEA NOT NULL,
     ip TEXT NOT NULL DEFAULT '',
-    failures TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ NOT NULL,
     finalized_at TIMESTAMPTZ
 );
@@ -70,7 +69,68 @@ CREATE TABLE IF NOT EXISTS hooks (
 CREATE INDEX IF NOT EXISTS idx_hooks_channel_id ON hooks(channel, id);
 CREATE INDEX IF NOT EXISTS idx_hooks_status_id ON hooks(status, id);
 
+-- An event is something that happened to a hook as a whole, and who did it:
+-- handled, discarded, retried, or failed. actor is a user's email, "api:"
+-- and an API key's label, a handler's name, or empty for Catchy itself.
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    hook_id TEXT NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_hook ON events(hook_id, id);
+
+-- A handler runs on each hook its channels catch; type says how (http: a
+-- request). options is a JSON object of its settings: for http, the URL,
+-- headers, and body are templates, which use secrets by name, like
+-- {{.Secrets.NAME}}.
+CREATE TABLE IF NOT EXISTS handlers (
+    name TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS channels_handlers (
+    channel TEXT NOT NULL REFERENCES channels(name) ON DELETE CASCADE,
+    handler TEXT NOT NULL REFERENCES handlers(name),
+    PRIMARY KEY (channel, handler)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channels_handlers_handler ON channels_handlers(handler);
+
+-- An attempt is one try at running a handler on a hook; a handler's state
+-- for a hook is its latest attempt. code is the response code (an HTTP
+-- status for http handlers; 0 when there was none), and output is what a
+-- script handler logged. Pending attempts run when due_at comes.
+-- A failed attempt schedules the next as a new row, with number counting
+-- up, until retries run out.
+CREATE TABLE IF NOT EXISTS attempts (
+    id TEXT PRIMARY KEY,
+    hook_id TEXT NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
+    handler TEXT NOT NULL,
+    number INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    due_at TIMESTAMPTZ NOT NULL,
+    code INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    output TEXT NOT NULL DEFAULT '',
+    ms INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_due ON attempts(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_hook ON attempts(hook_id, handler, id);
+
 -- +goose Down
+DROP TABLE IF EXISTS attempts;
+DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS channels_handlers;
+DROP TABLE IF EXISTS handlers;
 DROP TABLE IF EXISTS hooks;
 DROP TABLE IF EXISTS channels_guards;
 DROP TABLE IF EXISTS guards;

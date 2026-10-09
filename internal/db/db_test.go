@@ -9,8 +9,6 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
-
-	"github.com/catchysh/catchy/internal/seal"
 )
 
 func newTestDB(t *testing.T) *DB {
@@ -25,11 +23,6 @@ func newTestDB(t *testing.T) *DB {
 	if err := database.Migrate(t.Context()); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	sealer, err := seal.New("test-key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	database.UseSealer(sealer)
 	return database
 }
 
@@ -89,7 +82,7 @@ func TestCreateHookRoundTrip(t *testing.T) {
 	}
 	if got.Status != StatusPending || got.Channel != "stripe" || string(got.Body) != `{"a":"b"}` ||
 		got.Headers["Content-Type"] != "application/json" || got.Method != "POST" ||
-		len(got.Failures) != 0 || got.FinalizedAt != nil || !got.CreatedAt.Equal(h.CreatedAt) {
+		got.FinalizedAt != nil || !got.CreatedAt.Equal(h.CreatedAt) {
 		t.Fatalf("hook = %+v", got)
 	}
 
@@ -108,39 +101,57 @@ func TestSetHookStatus(t *testing.T) {
 	database := newTestDB(t)
 	h := createHook(t, database, "contact")
 
-	// Two failures, a retry, then success: the failures are kept.
-	got, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, "slack 500")
+	// Two failures, a retry, then handled by someone: each is an event, with
+	// who did it, kept across retries.
+	got, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, "slack", "HTTP 500")
 	if err != nil {
 		t.Fatalf("SetHookStatus: %v", err)
 	}
-	if got.Status != StatusFailed || len(got.Failures) != 1 || got.Failures[0].Message != "slack 500" || got.FinalizedAt != nil {
+	if got.Status != StatusFailed || got.FinalizedAt != nil {
 		t.Fatalf("after failure: %+v", got)
 	}
-	database.SetHookStatus(t.Context(), h.ID, StatusFailed, "timeout")
-	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "ignored")
-	if got.Status != StatusPending || len(got.Failures) != 2 || got.FinalizedAt != nil {
+	database.SetHookStatus(t.Context(), h.ID, StatusFailed, "email", "timeout")
+	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "vh@example.com", "")
+	if got.Status != StatusPending || got.FinalizedAt != nil {
 		t.Fatalf("after retry: %+v", got)
 	}
-	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusProcessed, "")
-	if got.Status != StatusProcessed || got.FinalizedAt == nil || len(got.Failures) != 2 ||
-		got.Failures[0].Message != "slack 500" || got.Failures[1].Message != "timeout" || got.Failures[1].At.Before(got.Failures[0].At) {
-		t.Fatalf("after processing: %+v", got)
+	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusHandled, "api:ci", "")
+	if got.Status != StatusHandled || got.FinalizedAt == nil {
+		t.Fatalf("after handling: %+v", got)
+	}
+	events, err := database.HookEvents(t.Context(), []string{h.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log []string
+	for _, e := range events[h.ID] {
+		log = append(log, e.Kind+" "+e.Actor+" "+e.Message)
+	}
+	want := []string{"failed slack HTTP 500", "failed email timeout", "retried vh@example.com ", "handled api:ci "}
+	if fmt.Sprint(log) != fmt.Sprint(want) {
+		t.Fatalf("events = %q, want %q", log, want)
 	}
 
 	// Going back to pending clears the finalized time.
-	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "")
+	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "", "")
 	if got.FinalizedAt != nil {
 		t.Fatalf("finalized_at kept after reopening: %v", got.FinalizedAt)
 	}
 
-	if _, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, ""); err == nil {
+	if _, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, "slack", ""); err == nil {
 		t.Fatal("SetHookStatus accepted a failure without a message")
 	}
-	if _, err := database.SetHookStatus(t.Context(), h.ID, "done", ""); err == nil {
+	if _, err := database.SetHookStatus(t.Context(), h.ID, "done", "", ""); err == nil {
 		t.Fatal("SetHookStatus accepted an invalid status")
 	}
-	if _, err := database.SetHookStatus(t.Context(), "missing", StatusProcessed, ""); err == nil {
+	if _, err := database.SetHookStatus(t.Context(), "missing", StatusHandled, "", ""); err == nil {
 		t.Fatal("SetHookStatus on a missing hook succeeded")
+	}
+
+	// Deleting the hook deletes its events.
+	database.DeleteHook(t.Context(), h.ID)
+	if events, _ := database.HookEvents(t.Context(), []string{h.ID}); len(events[h.ID]) != 0 {
+		t.Fatalf("events after delete = %+v", events)
 	}
 }
 
@@ -150,8 +161,8 @@ func TestChannelStats(t *testing.T) {
 	b := createHook(t, database, "contact")
 	createHook(t, database, "contact")
 	createHook(t, database, "newsletter")
-	database.SetHookStatus(t.Context(), a.ID, StatusProcessed, "")
-	database.SetHookStatus(t.Context(), b.ID, StatusFailed, "boom")
+	database.SetHookStatus(t.Context(), a.ID, StatusHandled, "", "")
+	database.SetHookStatus(t.Context(), b.ID, StatusFailed, "", "boom")
 
 	channels, err := database.ListChannels(t.Context())
 	if err != nil {
@@ -160,7 +171,7 @@ func TestChannelStats(t *testing.T) {
 	if len(channels) != 2 || channels[0].Name != "contact" || channels[1].Name != "newsletter" {
 		t.Fatalf("channels = %+v", channels)
 	}
-	if got, want := channels[0].Stats, (ChannelStats{Pending: 1, Processed: 1, Failed: 1}); got != want {
+	if got, want := channels[0].Stats, (ChannelStats{Pending: 1, Handled: 1, Failed: 1}); got != want {
 		t.Fatalf("contact stats = %+v, want %+v", got, want)
 	}
 	c, _ := database.GetChannel(t.Context(), "newsletter")
@@ -216,7 +227,7 @@ func TestListHooksFiltersAndPages(t *testing.T) {
 		}
 		ids = append(ids, createHook(t, database, channel).ID)
 	}
-	database.SetHookStatus(t.Context(), ids[4], StatusProcessed, "")
+	database.SetHookStatus(t.Context(), ids[4], StatusHandled, "", "")
 
 	page := func(f HookFilter) []string {
 		var got []string
@@ -244,6 +255,10 @@ func TestListHooksFiltersAndPages(t *testing.T) {
 	}
 	if got, want := page(HookFilter{Channel: "a", Status: StatusPending}), []string{ids[2], ids[0]}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("channel a pending: got %v, want %v", got, want)
+	}
+	newer, _ := database.ListHooks(t.Context(), HookFilter{Channel: "a", Before: ids[0]}, 5)
+	if len(newer) != 2 || newer[0].ID != ids[2] || newer[1].ID != ids[4] {
+		t.Fatalf("channel a newer than the first: got %v", newer)
 	}
 }
 
@@ -287,46 +302,22 @@ func TestGuards(t *testing.T) {
 		t.Fatalf("seeded guards = %+v, %v", guards, err)
 	}
 
-	g, err := database.CreateGuard(t.Context(), Guard{Name: "stripe-prod", Type: "signature", Scheme: "stripe", Secret: "whsec_abcdefgh1234"})
+	// A guard stores its secret's name; the value lives in the environment.
+	g, err := database.CreateGuard(t.Context(), Guard{Name: "stripe-prod", Type: "signature", Scheme: "stripe", Secret: "STRIPE_WEBHOOK_SECRET"})
 	if err != nil {
 		t.Fatalf("CreateGuard: %v", err)
 	}
-	if g.SecretHint != "…1234" || g.Secret != "" {
+	if g.Secret != "STRIPE_WEBHOOK_SECRET" {
 		t.Fatalf("guard = %+v", g)
 	}
 	if _, err := database.CreateGuard(t.Context(), Guard{Name: "stripe-prod", Type: "honeypot"}); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("duplicate CreateGuard = %v", err)
 	}
-
-	// The secret is stored sealed, not in plaintext.
-	var stored string
-	database.sql.QueryRowContext(t.Context(), `SELECT secret FROM guards WHERE name = 'stripe-prod'`).Scan(&stored)
-	if stored == "" || strings.Contains(stored, "whsec") {
-		t.Fatalf("stored secret = %q", stored)
-	}
-
-	// Rotate the secret.
-	g, err = database.RotateGuardSecret(t.Context(), "stripe-prod", "whsec_new_secret_9876")
-	if err != nil || g.SecretHint != "…9876" {
-		t.Fatalf("RotateGuardSecret = %+v, %v", g, err)
-	}
-
-	// Short secrets get no hint characters.
-	g, _ = database.CreateGuard(t.Context(), Guard{Name: "short", Type: "captcha", Scheme: "turnstile", Secret: "abc"})
-	if g.SecretHint != "…" {
-		t.Fatalf("short hint = %q", g.SecretHint)
-	}
-
-	// Without a sealer, secrets can't be stored.
-	database.UseSealer(nil)
-	if _, err := database.CreateGuard(t.Context(), Guard{Name: "nokey", Type: "captcha", Scheme: "turnstile", Secret: "abc"}); err == nil {
-		t.Fatal("stored a secret without a sealer")
-	}
 }
 
 func TestChannelGuards(t *testing.T) {
 	database := newTestDB(t)
-	database.CreateGuard(t.Context(), Guard{Name: "jobs-hmac", Type: "signature", Scheme: "hmac", Secret: "s3cret-key-value"})
+	database.CreateGuard(t.Context(), Guard{Name: "jobs-hmac", Type: "signature", Scheme: "hmac", Secret: "JOBS_SECRET"})
 
 	// A channel that doesn't exist yet has no guards.
 	exists, paused, guards, err := database.ChannelPolicy(t.Context(), "stripe")
@@ -350,7 +341,7 @@ func TestChannelGuards(t *testing.T) {
 	if !exists {
 		t.Fatal("jobs doesn't exist")
 	}
-	if len(guards) != 1 || guards[0].Secret != "s3cret-key-value" || guards[0].Scheme != "hmac" {
+	if len(guards) != 1 || guards[0].Secret != "JOBS_SECRET" || guards[0].Scheme != "hmac" {
 		t.Fatalf("jobs policy = %+v", guards)
 	}
 	if _, err := database.SetChannelGuards(t.Context(), "jobs", []string{"missing"}); err == nil {
@@ -374,5 +365,44 @@ func TestChannelGuards(t *testing.T) {
 	database.DeleteChannel(t.Context(), "contact")
 	if g, _ := database.GetGuard(t.Context(), "honeypot"); len(g.Channels) != 0 {
 		t.Fatalf("honeypot still on %v", g.Channels)
+	}
+}
+
+func TestUpdateHandlerAndLastAttempts(t *testing.T) {
+	database := newTestDB(t)
+	if _, err := database.CreateHandler(t.Context(), Handler{Name: "fwd", Type: "http", Options: `{"url":"https://a.example"}`}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := database.UpdateHandler(t.Context(), Handler{Name: "fwd", Type: "script", Options: `{"script":"1"}`})
+	if err != nil || h.Type != "script" || h.Options != `{"script":"1"}` {
+		t.Fatalf("UpdateHandler = %+v, %v", h, err)
+	}
+	if _, err := database.UpdateHandler(t.Context(), Handler{Name: "missing", Type: "http"}); err == nil {
+		t.Fatal("updating a missing handler succeeded")
+	}
+
+	database.SetChannelHandlers(t.Context(), "contact", []string{"fwd"})
+	hook := createHook(t, database, "contact")
+	database.EnqueueAttempts(t.Context(), hook.ID, "contact")
+	if last, _ := database.LastAttempts(t.Context()); len(last) != 0 {
+		t.Fatalf("last attempts before any ran = %+v", last)
+	}
+	due, _ := database.ClaimDueAttempts(t.Context(), 10, time.Minute)
+	database.FinishAttempt(t.Context(), due[0].ID, Outcome{Error: "boom"}, time.Hour)
+	last, err := database.LastAttempts(t.Context())
+	if err != nil || last["fwd"].Error != "boom" || last["fwd"].Status != AttemptFailed {
+		t.Fatalf("LastAttempts = %+v, %v", last, err)
+	}
+}
+
+func TestUpdateGuard(t *testing.T) {
+	database := newTestDB(t)
+	database.CreateGuard(t.Context(), Guard{Name: "ci", Type: "token", Options: `{"header":"X-Token"}`, Secret: "OLD"})
+	g, err := database.UpdateGuard(t.Context(), Guard{Name: "ci", Type: "signature", Scheme: "stripe", Options: "{}", Secret: "STRIPE"})
+	if err != nil || g.Type != "signature" || g.Scheme != "stripe" || g.Secret != "STRIPE" {
+		t.Fatalf("UpdateGuard = %+v, %v", g, err)
+	}
+	if _, err := database.UpdateGuard(t.Context(), Guard{Name: "missing", Type: "honeypot"}); err == nil {
+		t.Fatal("updating a missing guard succeeded")
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/catchysh/catchy/internal/db/migrations"
-	"github.com/catchysh/catchy/internal/seal"
 )
 
 type User struct {
@@ -36,12 +35,7 @@ type APIKey struct {
 type DB struct {
 	sql     *sql.DB
 	dialect string
-	sealer  *seal.Sealer // encrypts guard secrets; nil until UseSealer
 }
-
-// UseSealer sets how guard secrets are encrypted at rest. Without one, guards
-// that have a secret can't be created or used.
-func (d *DB) UseSealer(s *seal.Sealer) { d.sealer = s }
 
 func New(ctx context.Context, driver, dsn string) (*DB, error) {
 	sqlDB, err := sql.Open(driver, dsn)

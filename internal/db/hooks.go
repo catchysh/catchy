@@ -26,13 +26,13 @@ func ValidChannel(name string) bool {
 // Hook statuses. Hooks start pending; consumers set the others.
 const (
 	StatusPending   = "pending"
-	StatusProcessed = "processed"
+	StatusHandled   = "handled"
 	StatusFailed    = "failed"
 	StatusDiscarded = "discarded"
 )
 
 // Statuses lists every hook status, in display order.
-var Statuses = []string{StatusPending, StatusProcessed, StatusFailed, StatusDiscarded}
+var Statuses = []string{StatusPending, StatusHandled, StatusFailed, StatusDiscarded}
 
 // ValidStatus reports whether s is a hook status.
 func ValidStatus(s string) bool {
@@ -49,6 +49,16 @@ func NewID() string {
 	return strings.ToLower(ulid.Make().String())
 }
 
+// ValidID reports whether id looks like a hook ID: 26 lowercase Crockford
+// base32 characters.
+func ValidID(id string) bool {
+	if len(id) != ulid.EncodedSize {
+		return false
+	}
+	_, err := ulid.ParseStrict(strings.ToUpper(id))
+	return err == nil
+}
+
 // Hook is one request caught by a channel, stored as received.
 type Hook struct {
 	ID          string
@@ -60,35 +70,28 @@ type Hook struct {
 	ContentType string
 	Body        []byte
 	IP          string
-	Failures    []Failure // failures reported for the hook, oldest first
 	CreatedAt   time.Time
-	FinalizedAt *time.Time // when processed or discarded; nil otherwise
-}
-
-// Failure is a failure a consumer reported for a hook.
-type Failure struct {
-	At      time.Time `json:"at"`
-	Message string    `json:"message"`
+	FinalizedAt *time.Time // when handled or discarded; nil otherwise
 }
 
 // ChannelStats counts a channel's hooks by status.
 type ChannelStats struct {
 	Pending   int64
-	Processed int64
+	Handled   int64
 	Failed    int64
 	Discarded int64
 }
 
 func (s ChannelStats) Total() int64 {
-	return s.Pending + s.Processed + s.Failed + s.Discarded
+	return s.Pending + s.Handled + s.Failed + s.Discarded
 }
 
 func (s *ChannelStats) add(status string, n int64) {
 	switch status {
 	case StatusPending:
 		s.Pending += n
-	case StatusProcessed:
-		s.Processed += n
+	case StatusHandled:
+		s.Handled += n
 	case StatusFailed:
 		s.Failed += n
 	case StatusDiscarded:
@@ -255,8 +258,17 @@ func (d *DB) DeleteChannel(ctx context.Context, name string) error {
 	defer tx.Rollback()
 	// Hooks go explicitly: SQLite only enforces ON DELETE CASCADE when
 	// foreign keys are enabled on the connection.
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM attempts WHERE hook_id IN (SELECT id FROM hooks WHERE channel = ?)`), name); err != nil {
+		return fmt.Errorf("deleting attempts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM events WHERE hook_id IN (SELECT id FROM hooks WHERE channel = ?)`), name); err != nil {
+		return fmt.Errorf("deleting events: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM hooks WHERE channel = ?`), name); err != nil {
 		return fmt.Errorf("deleting hooks: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM channels_handlers WHERE channel = ?`), name); err != nil {
+		return fmt.Errorf("detaching handlers: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM channels_guards WHERE channel = ?`), name); err != nil {
 		return fmt.Errorf("detaching guards: %w", err)
@@ -273,21 +285,18 @@ func (d *DB) DeleteChannel(ctx context.Context, name string) error {
 
 // Hooks
 
-const hookColumns = `id, channel, status, method, query, headers, content_type, body, ip, failures, created_at, finalized_at`
+const hookColumns = `id, channel, status, method, query, headers, content_type, body, ip, created_at, finalized_at`
 
 func scanHook(row interface{ Scan(...any) error }) (*Hook, error) {
 	var h Hook
-	var headers, failures string
+	var headers string
 	var finalizedAt sql.NullTime
 	if err := row.Scan(&h.ID, &h.Channel, &h.Status, &h.Method, &h.Query, &headers,
-		&h.ContentType, &h.Body, &h.IP, &failures, &h.CreatedAt, &finalizedAt); err != nil {
+		&h.ContentType, &h.Body, &h.IP, &h.CreatedAt, &finalizedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(headers), &h.Headers); err != nil {
 		return nil, fmt.Errorf("decoding headers of hook %s: %w", h.ID, err)
-	}
-	if err := json.Unmarshal([]byte(failures), &h.Failures); err != nil {
-		return nil, fmt.Errorf("decoding failures of hook %s: %w", h.ID, err)
 	}
 	if finalizedAt.Valid {
 		h.FinalizedAt = &finalizedAt.Time
@@ -303,7 +312,6 @@ func (d *DB) CreateHook(ctx context.Context, h Hook) (*Hook, error) {
 	}
 	h.ID = NewID()
 	h.Status = StatusPending
-	h.Failures = []Failure{}
 	h.FinalizedAt = nil
 	if h.Headers == nil {
 		h.Headers = map[string]string{}
@@ -319,7 +327,7 @@ func (d *DB) CreateHook(ctx context.Context, h Hook) (*Hook, error) {
 	// Times are stored in UTC so SQLite, which compares them as text, orders
 	// them correctly. It's read back because Postgres stores microseconds.
 	query := d.q(`INSERT INTO hooks (` + hookColumns + `)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, NULL) RETURNING created_at`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) RETURNING created_at`)
 	if err := d.sql.QueryRowContext(ctx, query,
 		h.ID, h.Channel, h.Status, h.Method, h.Query, string(headers),
 		h.ContentType, h.Body, h.IP, time.Now().UTC()).
@@ -345,9 +353,11 @@ type HookFilter struct {
 	Channel string
 	Status  string
 	After   string // a hook ID; only older hooks match
+	Before  string // a hook ID; only newer hooks match, listed oldest first
 }
 
-// ListHooks returns up to limit hooks matching f, newest first.
+// ListHooks returns up to limit hooks matching f, newest first (oldest first
+// with Before).
 func (d *DB) ListHooks(ctx context.Context, f HookFilter, limit int) ([]Hook, error) {
 	query := `SELECT ` + hookColumns + ` FROM hooks WHERE 1 = 1`
 	var args []any
@@ -363,7 +373,13 @@ func (d *DB) ListHooks(ctx context.Context, f HookFilter, limit int) ([]Hook, er
 		query += ` AND id < ?`
 		args = append(args, f.After)
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
+	order := "DESC"
+	if f.Before != "" {
+		query += ` AND id > ?`
+		args = append(args, f.Before)
+		order = "ASC"
+	}
+	query += ` ORDER BY id ` + order + ` LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := d.sql.QueryContext(ctx, d.q(query), args...)
@@ -383,11 +399,12 @@ func (d *DB) ListHooks(ctx context.Context, f HookFilter, limit int) ([]Hook, er
 	return hooks, rows.Err()
 }
 
-// SetHookStatus sets a hook's status and returns the hook. "processed" and
-// "discarded" set its finalized time; "failed" appends message to its
-// failures and needs one; "pending" queues it again. Failures are never
-// cleared.
-func (d *DB) SetHookStatus(ctx context.Context, id, status, message string) (*Hook, error) {
+// SetHookStatus sets a hook's status, records it as an event by actor, and
+// returns the hook. "handled" and "discarded" set its finalized time and
+// cancel attempts still queued; "failed" needs a message saying why;
+// "pending" retries it. actor is who: a user's email, "api:" and an API
+// key's label, a handler's name, or empty for Catchy itself.
+func (d *DB) SetHookStatus(ctx context.Context, id, status, actor, message string) (*Hook, error) {
 	if !ValidStatus(status) {
 		return nil, fmt.Errorf("invalid status: %s", status)
 	}
@@ -401,42 +418,48 @@ func (d *DB) SetHookStatus(ctx context.Context, id, status, message string) (*Ho
 	}
 	defer tx.Rollback()
 
-	var failures string
-	if err := tx.QueryRowContext(ctx, d.q(`SELECT failures FROM hooks WHERE id = ?`), id).Scan(&failures); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("hook not found: %s", id)
-		}
-		return nil, fmt.Errorf("getting hook: %w", err)
-	}
-
 	now := time.Now().UTC()
 	var finalizedAt sql.NullTime
-	switch status {
-	case StatusProcessed, StatusDiscarded:
+	if status == StatusHandled || status == StatusDiscarded {
 		finalizedAt = sql.NullTime{Time: now, Valid: true}
-	case StatusFailed:
-		var list []Failure
-		if err := json.Unmarshal([]byte(failures), &list); err != nil {
-			return nil, fmt.Errorf("decoding failures of hook %s: %w", id, err)
-		}
-		b, err := json.Marshal(append(list, Failure{At: now, Message: message}))
-		if err != nil {
-			return nil, fmt.Errorf("encoding failures: %w", err)
-		}
-		failures = string(b)
 	}
-
-	query := d.q(`UPDATE hooks SET status = ?, failures = ?, finalized_at = ? WHERE id = ?`)
-	if _, err := tx.ExecContext(ctx, query, status, failures, finalizedAt, id); err != nil {
+	result, err := tx.ExecContext(ctx, d.q(`UPDATE hooks SET status = ?, finalized_at = ? WHERE id = ?`), status, finalizedAt, id)
+	if err != nil {
 		return nil, fmt.Errorf("updating hook: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("hook not found: %s", id)
+	}
+	query := d.q(`INSERT INTO events (id, hook_id, kind, actor, message, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+	if _, err := tx.ExecContext(ctx, query, NewID(), id, eventKinds[status], actor, message, now); err != nil {
+		return nil, fmt.Errorf("recording event: %w", err)
+	}
+	// A hook that's handled or discarded has nothing left to run: attempts
+	// still queued for it are cancelled.
+	if finalizedAt.Valid {
+		if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM attempts WHERE hook_id = ? AND status = ?`), id, AttemptPending); err != nil {
+			return nil, fmt.Errorf("cancelling attempts: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("updating hook: %w", err)
+	}
+	// Retrying a hook sends its failed attempts again.
+	if status == StatusPending {
+		if _, err := d.RetryAttempts(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	return d.GetHook(ctx, id)
 }
 
 func (d *DB) DeleteHook(ctx context.Context, id string) error {
+	if _, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM attempts WHERE hook_id = ?`), id); err != nil {
+		return fmt.Errorf("deleting attempts: %w", err)
+	}
+	if _, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM events WHERE hook_id = ?`), id); err != nil {
+		return fmt.Errorf("deleting events: %w", err)
+	}
 	result, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM hooks WHERE id = ?`), id)
 	if err != nil {
 		return fmt.Errorf("deleting hook: %w", err)

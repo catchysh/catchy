@@ -11,7 +11,7 @@ option go_package = "github.com/catchysh/catchy/gen/catchy/v1;catchyv1";
 // Number of a channel's hooks in each status.
 message ChannelStats {
   int64 pending = 1 [(google.api.field_behavior) = REQUIRED];
-  int64 processed = 2 [(google.api.field_behavior) = REQUIRED];
+  int64 handled = 2 [(google.api.field_behavior) = REQUIRED];
   int64 failed = 3 [(google.api.field_behavior) = REQUIRED];
   int64 discarded = 4 [(google.api.field_behavior) = REQUIRED];
 }
