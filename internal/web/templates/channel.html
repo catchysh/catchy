@@ -28,7 +28,7 @@
 <div class="mb-6 grid gap-3 grid-cols-2 lg:grid-cols-4">
   {{with .Channel.Stats}}
   <a href="/?channel={{$.Channel.Name}}&amp;status=pending" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-amber-500" aria-hidden="true"></span>Pending</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Pending}}text-amber-700{{else}}text-gray-300{{end}}">{{.Pending}}</span></a>
-  <a href="/?channel={{$.Channel.Name}}&amp;status=processed" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true"></span>Processed</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Processed}}text-gray-900{{else}}text-gray-300{{end}}">{{.Processed}}</span></a>
+  <a href="/?channel={{$.Channel.Name}}&amp;status=handled" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true"></span>Handled</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Handled}}text-gray-900{{else}}text-gray-300{{end}}">{{.Handled}}</span></a>
   <a href="/?channel={{$.Channel.Name}}&amp;status=failed" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-red-500" aria-hidden="true"></span>Failed</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Failed}}text-red-700{{else}}text-gray-300{{end}}">{{.Failed}}</span></a>
   <a href="/?channel={{$.Channel.Name}}&amp;status=discarded" class="group rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-brand-200 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"><span class="flex items-center gap-1.5 text-xs font-medium text-gray-500"><span class="w-2 h-2 rounded-full bg-gray-400" aria-hidden="true"></span>Discarded</span><span class="mt-1 block text-2xl font-semibold tabular-nums {{if .Discarded}}text-gray-900{{else}}text-gray-300{{end}}">{{.Discarded}}</span></a>
   {{end}}
@@ -63,18 +63,18 @@
       </form>
     </section>
 
-    <section class="bg-white rounded-xl border border-gray-200 shadow-sm p-5" aria-labelledby="destinations-heading">
+    <section class="bg-white rounded-xl border border-gray-200 shadow-sm p-5" aria-labelledby="handlers-heading">
       <div class="flex items-baseline justify-between gap-2 mb-1">
-        <h3 id="destinations-heading" class="text-sm font-semibold text-gray-900">Destinations</h3>
-        <a href="/destinations" class="text-xs text-brand-700 hover:underline">Manage</a>
+        <h3 id="handlers-heading" class="text-sm font-semibold text-gray-900">Handlers</h3>
+        <a href="/handlers" class="text-xs text-brand-700 hover:underline">Manage</a>
       </div>
-      <p class="text-xs text-gray-500 mb-4">Every hook caught here is delivered to each checked destination, with retries.</p>
-      <form method="POST" action="/channels/{{.Channel.Name}}/destinations">
-        {{if .Destinations}}
+      <p class="text-xs text-gray-500 mb-4">Every hook caught here runs each checked handler, with retries.</p>
+      <form method="POST" action="/channels/{{.Channel.Name}}/handlers">
+        {{if .Handlers}}
         <div class="divide-y divide-gray-100 rounded-lg border border-gray-200">
-          {{range .Destinations}}
+          {{range .Handlers}}
           <label class="flex gap-3 items-start px-3 py-2.5 cursor-pointer hover:bg-gray-50">
-            <input type="checkbox" name="destination" value="{{.Name}}" {{if .Enabled}}checked{{end}}
+            <input type="checkbox" name="handler" value="{{.Name}}" {{if .Enabled}}checked{{end}}
               class="mt-0.5 rounded border-gray-300 text-brand-600 focus:ring-brand-500">
             <span class="min-w-0">
               <span class="block text-sm font-medium text-gray-900">{{.Name}}</span>
@@ -84,9 +84,9 @@
           {{end}}
         </div>
         {{else}}
-        <p class="text-sm text-gray-500">No destinations yet. <a href="/destinations" class="text-brand-700 hover:underline">Create one</a>.</p>
+        <p class="text-sm text-gray-500">No handlers yet. <a href="/handlers" class="text-brand-700 hover:underline">Create one</a>.</p>
         {{end}}
-        <button type="submit" class="mt-4 w-full rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Save destinations</button>
+        <button type="submit" class="mt-4 w-full rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Save handlers</button>
       </form>
     </section>
 

@@ -11,8 +11,8 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/catchysh/catchy/gen/catchy/v1;catchyv1";
 
 // A hook is one request caught at POST /?channel={channel}: a webhook, a
-// contact form submission, or anything else. Catchy stores it as received;
-// consumers process it outside and report back by setting its status.
+// contact form submission, or anything else. Catchy stores it as received,
+// then runs its channel's handlers on it.
 message Hook {
   // Unique hook ID, a lowercase ULID: IDs sort by the time they were caught.
   string id = 1 [
@@ -33,8 +33,10 @@ message Hook {
       }
     }
   ];
-  // Processing state: "pending" until a consumer sets "processed", "failed",
-  // or "discarded".
+  // "pending" while its handlers run or retry (and, with no handlers, until
+  // it's marked handled in the dashboard); "handled" when every handler
+  // succeeded; "failed" when one gave up; "discarded" when deliberately
+  // ignored.
   string status = 3 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field) = {
@@ -42,7 +44,7 @@ message Hook {
       string: {
         in: [
           "pending",
-          "processed",
+          "handled",
           "failed",
           "discarded"
         ]
@@ -65,25 +67,42 @@ message Hook {
   optional google.protobuf.Struct payload = 9;
   // IP address of the sender.
   string ip = 10 [(google.api.field_behavior) = REQUIRED];
-  // Every failure reported for the hook, oldest first. Kept when the hook is
-  // retried, so its history stays visible after it's processed.
-  repeated Failure failures = 11 [(google.api.field_behavior) = REQUIRED];
+  reserved 11;
+  reserved "failures";
   // When the hook was caught.
   google.protobuf.Timestamp created_at = 12 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
-  // When the hook was processed or discarded. Absent while pending or failed.
+  // When the hook was handled or discarded. Absent while pending or failed.
   optional google.protobuf.Timestamp finalized_at = 13;
+  // What happened to the hook, oldest first, and who did it: a handler gave
+  // up, someone retried, discarded, or handled it, or its handlers all
+  // succeeded. Kept across retries, so its history stays visible.
+  repeated Event events = 14 [(google.api.field_behavior) = REQUIRED];
 }
 
-// A failure a consumer reported for a hook.
-message Failure {
-  google.protobuf.Timestamp at = 1 [
+// Something that happened to a hook.
+message Event {
+  // "handled", "discarded", "retried", or "failed".
+  string kind = 1 [
     (google.api.field_behavior) = REQUIRED,
-    (buf.validate.field).required = true
+    (buf.validate.field).string = {
+      in: [
+        "handled",
+        "discarded",
+        "retried",
+        "failed"
+      ]
+    }
   ];
-  string message = 2 [
+  // Who: a user's email, "api:" and an API key's label, the name of the
+  // handler that gave up, or empty for Catchy itself (its handlers all
+  // succeeded).
+  string actor = 2 [(google.api.field_behavior) = REQUIRED];
+  // Why, for "failed".
+  string message = 3 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.Timestamp created_at = 4 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
@@ -111,27 +130,8 @@ service HookService {
     };
   }
 
-  // Mark a hook processed: a consumer has handled it.
-  rpc ProcessHook(ProcessHookRequest) returns (ProcessHookResponse) {
-    option idempotency_level = IDEMPOTENT;
-    option (google.api.http) = {
-      post: "/v1/hooks/{id}/process"
-      body: "*"
-      response_body: "hook"
-    };
-  }
-
-  // Mark a hook failed: a consumer tried and couldn't. The message is added
-  // to its failures, which are kept when it's retried.
-  rpc FailHook(FailHookRequest) returns (FailHookResponse) {
-    option (google.api.http) = {
-      post: "/v1/hooks/{id}/fail"
-      body: "*"
-      response_body: "hook"
-    };
-  }
-
-  // Mark a hook discarded: it was deliberately ignored.
+  // Discard a hook: it's deliberately ignored, and deliveries still queued
+  // for it are cancelled.
   rpc DiscardHook(DiscardHookRequest) returns (DiscardHookResponse) {
     option idempotency_level = IDEMPOTENT;
     option (google.api.http) = {
@@ -141,8 +141,8 @@ service HookService {
     };
   }
 
-  // Set a hook back to pending so consumers process it again. Its failures
-  // are kept.
+  // Retry a hook: set it back to pending and deliver it again to each
+  // destination whose last try failed. Its failures are kept.
   rpc RetryHook(RetryHookRequest) returns (RetryHookResponse) {
     option idempotency_level = IDEMPOTENT;
     option (google.api.http) = {
@@ -169,7 +169,7 @@ message ListHooksRequest {
   optional string status = 4 [(buf.validate.field).string = {
     in: [
       "pending",
-      "processed",
+      "handled",
       "failed",
       "discarded"
     ]
@@ -197,33 +197,6 @@ message GetHookRequest {
 }
 
 message GetHookResponse {
-  Hook hook = 1 [(buf.validate.field).required = true];
-}
-
-message ProcessHookRequest {
-  string id = 1 [(buf.validate.field) = {
-    required: true
-    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
-  }];
-}
-
-message ProcessHookResponse {
-  Hook hook = 1 [(buf.validate.field).required = true];
-}
-
-message FailHookRequest {
-  string id = 1 [(buf.validate.field) = {
-    required: true
-    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
-  }];
-  // Why it failed.
-  string message = 2 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 2048
-  }];
-}
-
-message FailHookResponse {
   Hook hook = 1 [(buf.validate.field).required = true];
 }
 

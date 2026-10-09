@@ -62,7 +62,6 @@ CREATE TABLE IF NOT EXISTS hooks (
     content_type TEXT NOT NULL DEFAULT '',
     body BLOB NOT NULL,
     ip TEXT NOT NULL DEFAULT '',
-    failures TEXT NOT NULL DEFAULT '[]',
     created_at TIMESTAMP NOT NULL,
     finalized_at TIMESTAMP
 );
@@ -70,33 +69,48 @@ CREATE TABLE IF NOT EXISTS hooks (
 CREATE INDEX IF NOT EXISTS idx_hooks_channel_id ON hooks(channel, id);
 CREATE INDEX IF NOT EXISTS idx_hooks_status_id ON hooks(status, id);
 
--- A destination is where hooks are delivered, over a protocol (http).
--- options is a JSON object of its settings: URL, headers, and body are
--- templates, which use secrets by name, like {{.Secrets.NAME}}.
-CREATE TABLE IF NOT EXISTS destinations (
+-- An event is something that happened to a hook as a whole, and who did it:
+-- handled, discarded, retried, or failed. actor is a user's email, "api:"
+-- and an API key's label, a handler's name, or empty for Catchy itself.
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    hook_id TEXT NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_hook ON events(hook_id, id);
+
+-- A handler runs on each hook its channels catch; type says how (http: a
+-- request). options is a JSON object of its settings: for http, the URL,
+-- headers, and body are templates, which use secrets by name, like
+-- {{.Secrets.NAME}}.
+CREATE TABLE IF NOT EXISTS handlers (
     name TEXT PRIMARY KEY,
-    protocol TEXT NOT NULL,
+    type TEXT NOT NULL,
     options TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS channels_destinations (
+CREATE TABLE IF NOT EXISTS channels_handlers (
     channel TEXT NOT NULL REFERENCES channels(name) ON DELETE CASCADE,
-    destination TEXT NOT NULL REFERENCES destinations(name),
-    PRIMARY KEY (channel, destination)
+    handler TEXT NOT NULL REFERENCES handlers(name),
+    PRIMARY KEY (channel, handler)
 );
 
-CREATE INDEX IF NOT EXISTS idx_channels_destinations_destination ON channels_destinations(destination);
+CREATE INDEX IF NOT EXISTS idx_channels_handlers_handler ON channels_handlers(handler);
 
--- A delivery is one try at sending a hook to a destination; a
--- destination's state for a hook is its latest try. Pending tries are sent
--- when due_at comes. A failed try schedules the next as a new row, with
--- attempt counting up, until retries run out.
-CREATE TABLE IF NOT EXISTS deliveries (
+-- An attempt is one try at running a handler on a hook; a handler's state
+-- for a hook is its latest attempt. Pending attempts run when due_at comes.
+-- A failed attempt schedules the next as a new row, with number counting
+-- up, until retries run out.
+CREATE TABLE IF NOT EXISTS attempts (
     id TEXT PRIMARY KEY,
     hook_id TEXT NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
-    destination TEXT NOT NULL,
-    attempt INTEGER NOT NULL DEFAULT 1,
+    handler TEXT NOT NULL,
+    number INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'pending',
     due_at TIMESTAMP NOT NULL,
     http_status INTEGER NOT NULL DEFAULT 0,
@@ -106,13 +120,14 @@ CREATE TABLE IF NOT EXISTS deliveries (
     finished_at TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, due_at);
-CREATE INDEX IF NOT EXISTS idx_deliveries_hook ON deliveries(hook_id, destination, id);
+CREATE INDEX IF NOT EXISTS idx_attempts_due ON attempts(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_hook ON attempts(hook_id, handler, id);
 
 -- +goose Down
-DROP TABLE IF EXISTS deliveries;
-DROP TABLE IF EXISTS channels_destinations;
-DROP TABLE IF EXISTS destinations;
+DROP TABLE IF EXISTS attempts;
+DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS channels_handlers;
+DROP TABLE IF EXISTS handlers;
 DROP TABLE IF EXISTS hooks;
 DROP TABLE IF EXISTS channels_guards;
 DROP TABLE IF EXISTS guards;

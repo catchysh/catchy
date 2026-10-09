@@ -22,9 +22,9 @@ import (
 	"github.com/catchysh/catchy/gen/catchy/v1/catchyv1connect"
 	"github.com/catchysh/catchy/internal/auth"
 	"github.com/catchysh/catchy/internal/db"
-	"github.com/catchysh/catchy/internal/destination"
 	envvars "github.com/catchysh/catchy/internal/env"
 	"github.com/catchysh/catchy/internal/guard"
+	"github.com/catchysh/catchy/internal/handler"
 	"github.com/catchysh/catchy/internal/hook"
 	"github.com/catchysh/catchy/internal/service"
 	"github.com/catchysh/catchy/internal/web"
@@ -171,8 +171,8 @@ func cmdServe(migrate bool) {
 		log.Fatalf("failed to set up routes: %v", err)
 	}
 
-	// Send hooks to their channels' destinations in the background.
-	worker := &destination.Worker{DB: database, Sender: &destination.Sender{Dashboard: cfg.hostname, Env: cfg.env}}
+	// Send hooks to their channels' handlers in the background.
+	worker := &handler.Worker{DB: database, Runner: &handler.Runner{Dashboard: cfg.hostname, Env: cfg.env}}
 	go worker.Run(context.Background())
 
 	addr := ":" + port

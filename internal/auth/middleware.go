@@ -24,6 +24,11 @@ func RequireAPIKey(database *db.DB) func(http.Handler) http.Handler {
 			}
 
 			ctx := ContextWithUserID(r.Context(), key.UserID)
+			name := key.Label
+			if name == "" {
+				name = key.KeyPrefix
+			}
+			ctx = ContextWithActor(ctx, "api:"+name)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

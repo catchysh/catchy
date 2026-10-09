@@ -25,7 +25,7 @@
           <th class="px-6 py-4">Name</th>
           <th class="px-6 py-4">Guards</th>
           <th class="px-4 py-4 text-right">Pending</th>
-          <th class="px-4 py-4 text-right">Processed</th>
+          <th class="px-4 py-4 text-right">Handled</th>
           <th class="px-4 py-4 text-right">Failed</th>
           <th class="px-4 py-4 text-right">Discarded</th>
           <th class="px-6 py-4"></th>
@@ -42,7 +42,7 @@
             {{range .Guards}}<span class="mr-1 inline-block rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-xs">{{.}}</span>{{else}}<span class="text-gray-400">none</span>{{end}}
           </td>
           <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=pending" class="{{if .Stats.Pending}}font-medium text-amber-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Pending}}</a></td>
-          <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=processed" class="{{if .Stats.Processed}}text-gray-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Processed}}</a></td>
+          <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=handled" class="{{if .Stats.Handled}}text-gray-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Handled}}</a></td>
           <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=failed" class="{{if .Stats.Failed}}font-medium text-red-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Failed}}</a></td>
           <td class="px-4 py-3 text-right tabular-nums"><a href="/?channel={{.Name}}&amp;status=discarded" class="{{if .Stats.Discarded}}text-gray-700{{else}}text-gray-400{{end}} hover:underline">{{.Stats.Discarded}}</a></td>
           <td class="px-6 py-3 text-right">

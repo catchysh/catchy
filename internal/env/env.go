@@ -1,6 +1,6 @@
 // Package env reads the variables and secrets set in Catchy's environment:
 // CATCHY_VAR_NAME for {{.Vars.NAME}} and CATCHY_SECRET_NAME for
-// {{.Secrets.NAME}} in destination templates. Guards use secrets by name too.
+// {{.Secrets.NAME}} in handler templates. Guards use secrets by name too.
 // Secrets live only here, typically set by a secret manager, and are never
 // stored. Only these prefixes are read, so Catchy's own settings, like
 // SESSION_SECRET, stay out of reach.

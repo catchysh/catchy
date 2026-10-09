@@ -1,6 +1,7 @@
 // Package hook catches hooks: anonymous POSTs to /?channel={channel}, such as
 // a provider's webhook or a website's contact form submitting straight from
-// the visitor's browser. Each is stored as received, for consumers to process.
+// the visitor's browser. Each is stored as received, for its channel's
+// handlers to run on.
 package hook
 
 import (
@@ -152,9 +153,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	// The hook is stored; if queueing deliveries fails it can be retried.
-	if _, err := h.db.EnqueueDeliveries(r.Context(), hook.ID, channel); err != nil {
-		log.Printf("hook %s: queueing deliveries: %v", hook.ID, err)
+	// The hook is stored; if queueing attempts fails it can be retried.
+	if _, err := h.db.EnqueueAttempts(r.Context(), hook.ID, channel); err != nil {
+		log.Printf("hook %s: queueing attempts: %v", hook.ID, err)
 	}
 	respondOK(w, hook.ID)
 }

@@ -4,14 +4,12 @@ Self-hosted hook catcher with multi-protocol API (gRPC, gRPC-Web, Connect, REST)
 
 ## Services
 
-`catchy.v1.HookService` — list and get caught hooks, report how they were processed, and delete them.
+`catchy.v1.HookService` — list and get caught hooks, retry or discard them, and delete them.
 
 | RPC | Method | Path |
 |---|---|---|
 | `ListHooks` | `GET` | `/v1/hooks` |
 | `GetHook` | `GET` | `/v1/hooks/{id}` |
-| `ProcessHook` | `POST` | `/v1/hooks/{id}/process` |
-| `FailHook` | `POST` | `/v1/hooks/{id}/fail` |
 | `DiscardHook` | `POST` | `/v1/hooks/{id}/discard` |
 | `RetryHook` | `POST` | `/v1/hooks/{id}/retry` |
 | `DeleteHook` | `DELETE` | `/v1/hooks/{id}` |

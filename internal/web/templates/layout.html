@@ -111,7 +111,7 @@
           <a href="/" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "hooks"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Hooks</a>
           <a href="/channels" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "channels"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Channels</a>
           <a href="/guards" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "guards"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Guards</a>
-          <a href="/destinations" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "destinations"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Destinations</a>
+          <a href="/handlers" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "handlers"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">Handlers</a>
           <a href="/keys" class="shrink-0 px-2 sm:px-3 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if eq .ActiveTab "keys"}}bg-brand-50 text-brand-700{{else}}text-gray-600 hover:text-gray-900 hover:bg-gray-100{{end}}">API Keys</a>
         </nav>
       </div>
@@ -150,7 +150,7 @@
   <main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
     {{with missingSecrets}}
     <div class="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
-      <p class="font-medium">{{len .}} {{if eq (len .) 1}}secret is{{else}}secrets are{{end}} used but not set, so hooks and deliveries that need {{if eq (len .) 1}}it{{else}}them{{end}} fail:</p>
+      <p class="font-medium">{{len .}} {{if eq (len .) 1}}secret is{{else}}secrets are{{end}} used but not set, so hooks and handlers that need {{if eq (len .) 1}}it{{else}}them{{end}} fail:</p>
       <ul class="mt-1 space-y-0.5">
         {{range .}}<li><code>{{.Name}}</code> <span class="text-red-700">({{range $i, $u := .UsedBy}}{{if $i}}, {{end}}{{$u}}{{end}})</span>: add <code>CATCHY_SECRET_{{.Name}}</code> to the environment and restart.</li>{{end}}
       </ul>
@@ -271,7 +271,7 @@
 
 {{define "status-badge"}}
 {{- if eq . "pending"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>pending</span>
-{{- else if eq . "processed"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>processed</span>
+{{- else if eq . "handled"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>handled</span>
 {{- else if eq . "failed"}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true"></span>failed</span>
 {{- else}}<span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-600 border border-gray-200 px-2 py-0.5 text-xs font-medium"><span class="w-1.5 h-1.5 rounded-full bg-gray-400" aria-hidden="true"></span>{{.}}</span>
 {{- end}}
@@ -279,7 +279,7 @@
 
 {{define "status-dot"}}
 {{- if eq . "pending"}}<span class="shrink-0 w-2 h-2 rounded-full bg-amber-500" title="pending"></span><span class="sr-only">pending</span>
-{{- else if eq . "processed"}}<span class="shrink-0 w-2 h-2 rounded-full bg-emerald-500" title="processed"></span><span class="sr-only">processed</span>
+{{- else if eq . "handled"}}<span class="shrink-0 w-2 h-2 rounded-full bg-emerald-500" title="handled"></span><span class="sr-only">handled</span>
 {{- else if eq . "failed"}}<span class="shrink-0 w-2 h-2 rounded-full bg-red-500" title="failed"></span><span class="sr-only">failed</span>
 {{- else}}<span class="shrink-0 w-2 h-2 rounded-full bg-gray-300" title="{{.}}"></span><span class="sr-only">{{.}}</span>
 {{- end}}
@@ -292,7 +292,7 @@
 {{- if and .Selected (not .Set)}}<option value="{{.Selected}}" selected data-unset>{{.Selected}} (not set)</option>{{end}}
 {{- end}}
 
-{{/* placeholders is a "?" that opens a reference of what destination
+{{/* placeholders is a "?" that opens a reference of what handler
      templates can use, including the variables and secrets that are set. */}}
 {{define "placeholders"}}
 <details class="relative" data-popover>

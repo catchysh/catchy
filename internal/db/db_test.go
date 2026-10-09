@@ -82,7 +82,7 @@ func TestCreateHookRoundTrip(t *testing.T) {
 	}
 	if got.Status != StatusPending || got.Channel != "stripe" || string(got.Body) != `{"a":"b"}` ||
 		got.Headers["Content-Type"] != "application/json" || got.Method != "POST" ||
-		len(got.Failures) != 0 || got.FinalizedAt != nil || !got.CreatedAt.Equal(h.CreatedAt) {
+		got.FinalizedAt != nil || !got.CreatedAt.Equal(h.CreatedAt) {
 		t.Fatalf("hook = %+v", got)
 	}
 
@@ -101,39 +101,57 @@ func TestSetHookStatus(t *testing.T) {
 	database := newTestDB(t)
 	h := createHook(t, database, "contact")
 
-	// Two failures, a retry, then success: the failures are kept.
-	got, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, "slack 500")
+	// Two failures, a retry, then handled by someone: each is an event, with
+	// who did it, kept across retries.
+	got, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, "slack", "HTTP 500")
 	if err != nil {
 		t.Fatalf("SetHookStatus: %v", err)
 	}
-	if got.Status != StatusFailed || len(got.Failures) != 1 || got.Failures[0].Message != "slack 500" || got.FinalizedAt != nil {
+	if got.Status != StatusFailed || got.FinalizedAt != nil {
 		t.Fatalf("after failure: %+v", got)
 	}
-	database.SetHookStatus(t.Context(), h.ID, StatusFailed, "timeout")
-	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "ignored")
-	if got.Status != StatusPending || len(got.Failures) != 2 || got.FinalizedAt != nil {
+	database.SetHookStatus(t.Context(), h.ID, StatusFailed, "email", "timeout")
+	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "vh@example.com", "")
+	if got.Status != StatusPending || got.FinalizedAt != nil {
 		t.Fatalf("after retry: %+v", got)
 	}
-	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusProcessed, "")
-	if got.Status != StatusProcessed || got.FinalizedAt == nil || len(got.Failures) != 2 ||
-		got.Failures[0].Message != "slack 500" || got.Failures[1].Message != "timeout" || got.Failures[1].At.Before(got.Failures[0].At) {
-		t.Fatalf("after processing: %+v", got)
+	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusHandled, "api:ci", "")
+	if got.Status != StatusHandled || got.FinalizedAt == nil {
+		t.Fatalf("after handling: %+v", got)
+	}
+	events, err := database.HookEvents(t.Context(), []string{h.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log []string
+	for _, e := range events[h.ID] {
+		log = append(log, e.Kind+" "+e.Actor+" "+e.Message)
+	}
+	want := []string{"failed slack HTTP 500", "failed email timeout", "retried vh@example.com ", "handled api:ci "}
+	if fmt.Sprint(log) != fmt.Sprint(want) {
+		t.Fatalf("events = %q, want %q", log, want)
 	}
 
 	// Going back to pending clears the finalized time.
-	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "")
+	got, _ = database.SetHookStatus(t.Context(), h.ID, StatusPending, "", "")
 	if got.FinalizedAt != nil {
 		t.Fatalf("finalized_at kept after reopening: %v", got.FinalizedAt)
 	}
 
-	if _, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, ""); err == nil {
+	if _, err := database.SetHookStatus(t.Context(), h.ID, StatusFailed, "slack", ""); err == nil {
 		t.Fatal("SetHookStatus accepted a failure without a message")
 	}
-	if _, err := database.SetHookStatus(t.Context(), h.ID, "done", ""); err == nil {
+	if _, err := database.SetHookStatus(t.Context(), h.ID, "done", "", ""); err == nil {
 		t.Fatal("SetHookStatus accepted an invalid status")
 	}
-	if _, err := database.SetHookStatus(t.Context(), "missing", StatusProcessed, ""); err == nil {
+	if _, err := database.SetHookStatus(t.Context(), "missing", StatusHandled, "", ""); err == nil {
 		t.Fatal("SetHookStatus on a missing hook succeeded")
+	}
+
+	// Deleting the hook deletes its events.
+	database.DeleteHook(t.Context(), h.ID)
+	if events, _ := database.HookEvents(t.Context(), []string{h.ID}); len(events[h.ID]) != 0 {
+		t.Fatalf("events after delete = %+v", events)
 	}
 }
 
@@ -143,8 +161,8 @@ func TestChannelStats(t *testing.T) {
 	b := createHook(t, database, "contact")
 	createHook(t, database, "contact")
 	createHook(t, database, "newsletter")
-	database.SetHookStatus(t.Context(), a.ID, StatusProcessed, "")
-	database.SetHookStatus(t.Context(), b.ID, StatusFailed, "boom")
+	database.SetHookStatus(t.Context(), a.ID, StatusHandled, "", "")
+	database.SetHookStatus(t.Context(), b.ID, StatusFailed, "", "boom")
 
 	channels, err := database.ListChannels(t.Context())
 	if err != nil {
@@ -153,7 +171,7 @@ func TestChannelStats(t *testing.T) {
 	if len(channels) != 2 || channels[0].Name != "contact" || channels[1].Name != "newsletter" {
 		t.Fatalf("channels = %+v", channels)
 	}
-	if got, want := channels[0].Stats, (ChannelStats{Pending: 1, Processed: 1, Failed: 1}); got != want {
+	if got, want := channels[0].Stats, (ChannelStats{Pending: 1, Handled: 1, Failed: 1}); got != want {
 		t.Fatalf("contact stats = %+v, want %+v", got, want)
 	}
 	c, _ := database.GetChannel(t.Context(), "newsletter")
@@ -209,7 +227,7 @@ func TestListHooksFiltersAndPages(t *testing.T) {
 		}
 		ids = append(ids, createHook(t, database, channel).ID)
 	}
-	database.SetHookStatus(t.Context(), ids[4], StatusProcessed, "")
+	database.SetHookStatus(t.Context(), ids[4], StatusHandled, "", "")
 
 	page := func(f HookFilter) []string {
 		var got []string

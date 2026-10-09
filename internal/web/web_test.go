@@ -42,26 +42,52 @@ func TestSummary(t *testing.T) {
 	}
 }
 
-func TestDeliveryRows(t *testing.T) {
+func TestAttemptRows(t *testing.T) {
 	at := time.Date(2026, 10, 8, 12, 0, 0, 0, time.Local)
 	done := func(d time.Duration) *time.Time { t := at.Add(d); return &t }
-	rows := deliveryRows([]db.Delivery{
-		{Destination: "broken", Attempt: 1, Status: db.DeliveryFailed, Error: "refused", FinishedAt: done(0)},
-		{Destination: "broken", Attempt: 2, Status: db.DeliveryFailed, Error: "HTTP 503", HTTPStatus: 503, FinishedAt: done(10 * time.Second)},
-		{Destination: "broken", Attempt: 3, Status: db.DeliveryPending, DueAt: at.Add(50 * time.Second)},
-		{Destination: "echo", Attempt: 1, Status: db.DeliveryDelivered, HTTPStatus: 200, MS: 12, FinishedAt: done(0)},
-		{Destination: "new", Attempt: 1, Status: db.DeliveryPending, DueAt: at},
+	rows := hookHandlerRows([]db.Attempt{
+		{Handler: "broken", Number: 1, Status: db.AttemptFailed, Error: "refused", FinishedAt: done(0)},
+		{Handler: "broken", Number: 2, Status: db.AttemptFailed, Error: "HTTP 503", HTTPStatus: 503, FinishedAt: done(10 * time.Second)},
+		{Handler: "broken", Number: 3, Status: db.AttemptPending, DueAt: at.Add(50 * time.Second)},
+		{Handler: "echo", Number: 1, Status: db.AttemptSucceeded, HTTPStatus: 200, MS: 12, FinishedAt: done(0)},
+		{Handler: "new", Number: 1, Status: db.AttemptPending, DueAt: at},
 	})
 	if len(rows) != 3 {
 		t.Fatalf("rows = %+v", rows)
 	}
-	if b := rows[0]; b.Status != db.DeliveryPending || b.Attempts != 2 || b.LastError != "HTTP 503" || b.NextAt != "12:00:50" || len(b.History) != 2 || b.History[1].Status != 503 {
+	if b := rows[0]; b.Status != db.AttemptPending || b.Attempts != 2 || b.LastError != "HTTP 503" || b.NextAt != "12:00:50" || len(b.History) != 2 || b.History[1].Status != 503 {
 		t.Errorf("broken = %+v", b)
 	}
-	if e := rows[1]; e.Status != db.DeliveryDelivered || e.Attempts != 1 || e.NextAt != "" || e.History[0].MS != 12 {
+	if e := rows[1]; e.Status != db.AttemptSucceeded || e.Attempts != 1 || e.NextAt != "" || e.History[0].MS != 12 {
 		t.Errorf("echo = %+v", e)
 	}
-	if n := rows[2]; n.Status != db.DeliveryPending || n.Attempts != 0 || n.NextAt != "" || n.History != nil {
+	if n := rows[2]; n.Status != db.AttemptPending || n.Attempts != 0 || n.NextAt != "" || n.History != nil {
 		t.Errorf("new = %+v", n)
+	}
+}
+
+func TestSummarizeHandlers(t *testing.T) {
+	if summarizeHandlers(nil) != nil {
+		t.Fatal("a hook without handlers has a summary")
+	}
+	ok := hookHandlerRow{Handler: "echo", Status: db.AttemptSucceeded}
+	retrying := hookHandlerRow{Handler: "slack", Status: db.AttemptPending, NextAt: "10:50:13", LastError: "HTTP 503"}
+	gaveUp := hookHandlerRow{Handler: "broken", Status: db.AttemptFailed, LastError: "refused"}
+	for _, tc := range []struct {
+		rows  []hookHandlerRow
+		state string
+		done  int
+	}{
+		{[]hookHandlerRow{ok, ok}, db.AttemptSucceeded, 2},
+		{[]hookHandlerRow{ok, retrying}, db.AttemptPending, 1},
+		{[]hookHandlerRow{retrying, gaveUp, ok}, db.AttemptFailed, 1},
+	} {
+		s := summarizeHandlers(tc.rows)
+		if s.State != tc.state || s.Done != tc.done || s.Total != len(tc.rows) {
+			t.Errorf("summary = %+v, want %s %d/%d", s, tc.state, tc.done, len(tc.rows))
+		}
+	}
+	if s := summarizeHandlers([]hookHandlerRow{retrying, gaveUp}); s.Title != "slack: retry at 10:50:13: HTTP 503\nbroken: gave up: refused" {
+		t.Errorf("title = %q", s.Title)
 	}
 }

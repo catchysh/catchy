@@ -1,9 +1,9 @@
-// Package destination delivers hooks to where they're needed. Every
-// destination speaks a protocol; today that's HTTP, which covers webhooks,
-// chat (Slack, Discord), and email APIs (Resend) through templates. This
-// package knows how destinations are checked and sent, and runs the worker
-// that sends queued deliveries.
-package destination
+// Package handler runs a channel's handlers on each hook it catches. A
+// handler has a type; today that's http, a request built from templates,
+// which covers webhooks, chat (Slack, Discord), and email APIs (Resend).
+// This package checks handlers, runs them, and runs the worker that works
+// through queued attempts, retrying failed ones.
+package handler
 
 import (
 	"bytes"
@@ -32,19 +32,19 @@ import (
 	"github.com/catchysh/catchy/internal/payload"
 )
 
-// Protocols: how a destination is reached.
+// Handler types.
 const (
 	HTTP = "http" // an HTTP request to a URL
 )
 
-// Protocols lists every protocol, in display order.
-var Protocols = []string{HTTP}
+// Types lists every handler type, in display order.
+var Types = []string{HTTP}
 
-// SignatureHeader carries the signature of signed deliveries: "sha256=" and
+// SignatureHeader carries the signature of signed requests: "sha256=" and
 // the hex HMAC-SHA256 of the body, the format hmac guards check.
 const SignatureHeader = "X-Catchy-Signature"
 
-// Options are a destination's settings. URL, Headers, and Body are
+// Options are a handler's settings. URL, Headers, and Body are
 // text/template templates; see Data for what they can use. Secrets are used
 // by name, like {{.Secrets.SLACK_WEBHOOK_URL}}, so none are stored here.
 type Options struct {
@@ -66,7 +66,7 @@ func ParseOptions(raw string) (Options, error) {
 		return o, nil
 	}
 	if err := json.Unmarshal([]byte(raw), &o); err != nil {
-		return o, fmt.Errorf("decoding destination options: %w", err)
+		return o, fmt.Errorf("decoding handler options: %w", err)
 	}
 	return o, nil
 }
@@ -77,13 +77,13 @@ func (o Options) JSON() string {
 	return string(b)
 }
 
-// Preset is a ready-made destination configuration the dashboard offers.
+// Preset is a ready-made handler configuration the dashboard offers.
 type Preset struct {
 	Name        string
 	Label       string
 	Description string
 	Group       string
-	Protocol    string
+	Type        string
 	URLHint     string // placeholder when the preset leaves the URL to the user
 	Options     Options
 }
@@ -100,7 +100,7 @@ const (
 	discordBody = `{"content": "New hook in #{{.Channel}}\n\n{{.Text}}"}`
 )
 
-// Presets are the dashboard's destination choices, grouped, in display order.
+// Presets are the dashboard's handler choices, grouped, in display order.
 var Presets = []Preset{
 	{"resend", "Resend", "Email each hook through Resend's API, with the RESEND_API_KEY secret; edit from and to in the body.", "Email", HTTP, "",
 		Options{Method: http.MethodPost, URL: "https://api.resend.com/emails", Headers: "Authorization: Bearer {{.Secrets.RESEND_API_KEY}}", ContentType: "application/json", Body: resendBody}},
@@ -132,14 +132,14 @@ func PresetGroups() []PresetGroup {
 	return groups
 }
 
-// Validate checks a destination's settings and returns them with defaults
+// Validate checks a handler's settings and returns them with defaults
 // filled in. Templates are rendered with a sample hook, so mistakes show up
 // now rather than on the first hook: a JSON body must come out as valid JSON,
 // the URL as an http or https URL. Secrets that aren't set in e are allowed;
-// deliveries fail until they are.
-func Validate(protocol string, opts Options, e env.Env) (Options, error) {
-	if protocol != HTTP {
-		return Options{}, fmt.Errorf("unknown protocol %q: use %s", protocol, strings.Join(Protocols, ", "))
+// attempts fail until they are.
+func Validate(typ string, opts Options, e env.Env) (Options, error) {
+	if typ != HTTP {
+		return Options{}, fmt.Errorf("unknown handler type %q: use %s", typ, strings.Join(Types, ", "))
 	}
 	if opts.Method == "" {
 		opts.Method = http.MethodPost
@@ -149,7 +149,7 @@ func Validate(protocol string, opts Options, e env.Env) (Options, error) {
 	}
 	out := Options{Method: opts.Method, URL: strings.TrimSpace(opts.URL), Headers: strings.TrimSpace(opts.Headers), Body: opts.Body, SignWith: strings.TrimSpace(opts.SignWith)}
 	// Secrets that aren't set yet are allowed: they're flagged in the
-	// dashboard, and deliveries fail until they're set. The sample fills them
+	// dashboard, and attempts fail until they're set. The sample fills them
 	// in with a URL, so a URL that's one secret still checks out.
 	sample := sampleData()
 	sample.Vars = e.Vars
@@ -166,7 +166,7 @@ func Validate(protocol string, opts Options, e env.Env) (Options, error) {
 		}
 	}
 	if out.URL == "" {
-		return Options{}, errors.New("a destination needs a URL")
+		return Options{}, errors.New("a handler needs a URL")
 	}
 	raw, err := render(out.URL, sample)
 	if err != nil {
@@ -208,7 +208,7 @@ func Validate(protocol string, opts Options, e env.Env) (Options, error) {
 	return out, nil
 }
 
-// SecretsUsed returns the names of the secrets a destination's settings use.
+// SecretsUsed returns the names of the secrets a handler's settings use.
 func SecretsUsed(o Options) []string {
 	var names []string
 	for _, m := range secretRef.FindAllStringSubmatch(o.URL+"\n"+o.Headers+"\n"+o.Body, -1) {
@@ -223,15 +223,15 @@ func SecretsUsed(o Options) []string {
 
 var secretRef = regexp.MustCompile(`\.Secrets\.([A-Za-z_][A-Za-z0-9_]*)`)
 
-// Describe summarizes a destination for display, e.g. "http · POST
+// Describe summarizes a handler for display, e.g. "http · POST
 // api.resend.com", "http · POST {{.Secrets.SLACK_WEBHOOK_URL}}", or
 // "http · POST example.com · forward · signed".
-func Describe(protocol string, o Options) string {
+func Describe(typ string, o Options) string {
 	where := o.URL
 	if u, err := url.Parse(o.URL); err == nil && u.Host != "" && !strings.Contains(o.URL, "{{") {
 		where = u.Host
 	}
-	s := protocol + " · " + o.Method + " " + where
+	s := typ + " · " + o.Method + " " + where
 	if o.Body == "" {
 		s += " · forward"
 	}
@@ -253,7 +253,7 @@ func headerLines(headers string) []string {
 }
 
 // Recipients are the email fields a hook mustn't fill in: otherwise anyone
-// could send email anywhere through the destination.
+// could send email anywhere through the handler.
 var Recipients = []string{"from", "to", "cc", "bcc"}
 
 // taintMarker stands in for everything from the hook in tainted data.
@@ -634,8 +634,8 @@ func text(v any) string {
 
 // Sending
 
-// Sender delivers hooks to destinations.
-type Sender struct {
+// Runner runs handlers on hooks.
+type Runner struct {
 	// Dashboard is the dashboard's base URL, for links in messages.
 	Dashboard string
 	// Client makes the requests; nil uses a client with a timeout.
@@ -644,18 +644,18 @@ type Sender struct {
 	Env env.Env
 }
 
-func (s *Sender) client() *http.Client {
+func (s *Runner) client() *http.Client {
 	if s.Client != nil {
 		return s.Client
 	}
 	return &http.Client{Timeout: 15 * time.Second}
 }
 
-// Send delivers a hook to a destination and returns the HTTP status of the
+// Run runs a handler on a hook and returns the HTTP status of the
 // response, if there was one. A returned error means it should be retried.
-func (s *Sender) Send(ctx context.Context, dst db.Destination, h db.Hook) (int, error) {
-	if dst.Protocol != HTTP {
-		return 0, fmt.Errorf("unknown protocol %q", dst.Protocol)
+func (s *Runner) Run(ctx context.Context, dst db.Handler, h db.Hook) (int, error) {
+	if dst.Type != HTTP {
+		return 0, fmt.Errorf("unknown handler type %q", dst.Type)
 	}
 	o, err := ParseOptions(dst.Options)
 	if err != nil {
@@ -715,7 +715,7 @@ func (s *Sender) Send(ctx context.Context, dst db.Destination, h db.Hook) (int, 
 
 // do sends a request; anything but a 2xx response is an error, with the
 // start of the response body.
-func (s *Sender) do(req *http.Request) (int, error) {
+func (s *Runner) do(req *http.Request) (int, error) {
 	resp, err := s.client().Do(req)
 	if err != nil {
 		var ue *url.Error
@@ -738,19 +738,19 @@ func (s *Sender) do(req *http.Request) (int, error) {
 
 // Worker
 
-// Backoff is the wait before each retry; after the last one a delivery gives
+// Backoff is the wait before each retry; after the last one an attempt gives
 // up.
 var Backoff = []time.Duration{10 * time.Second, 40 * time.Second, 90 * time.Second, 160 * time.Second}
 
-// Worker sends due deliveries.
+// Worker sends due attempts.
 type Worker struct {
 	DB     *db.DB
-	Sender *Sender
-	// Interval is how often it checks for due deliveries; zero means a second.
+	Runner *Runner
+	// Interval is how often it checks for due attempts; zero means a second.
 	Interval time.Duration
 }
 
-// Run sends due deliveries until ctx is done.
+// Run sends due attempts until ctx is done.
 func (w *Worker) Run(ctx context.Context) {
 	interval := w.Interval
 	if interval == 0 {
@@ -760,7 +760,7 @@ func (w *Worker) Run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		if err := w.RunOnce(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("deliveries: %v", err)
+			log.Printf("attempts: %v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -770,25 +770,25 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce sends the deliveries that are due now.
+// RunOnce sends the attempts that are due now.
 func (w *Worker) RunOnce(ctx context.Context) error {
-	due, err := w.DB.ClaimDueDeliveries(ctx, 20, 2*time.Minute)
+	due, err := w.DB.ClaimDueAttempts(ctx, 20, 2*time.Minute)
 	if err != nil {
 		return err
 	}
 	for _, dl := range due {
 		var retryIn time.Duration
 		start := time.Now()
-		status, err := w.Sender.Send(ctx, dl.Destination, dl.Hook)
+		status, err := w.Runner.Run(ctx, dl.Handler, dl.Hook)
 		outcome := db.Outcome{HTTPStatus: status, MS: time.Since(start).Milliseconds()}
 		if err != nil {
 			outcome.Error = err.Error()
 			// Attempt n is retried after Backoff[n-1], while there is one.
-			if dl.Attempt <= len(Backoff) {
-				retryIn = Backoff[dl.Attempt-1]
+			if dl.Number <= len(Backoff) {
+				retryIn = Backoff[dl.Number-1]
 			}
 		}
-		if err := w.DB.FinishDelivery(ctx, dl.ID, outcome, retryIn); err != nil {
+		if err := w.DB.FinishAttempt(ctx, dl.ID, outcome, retryIn); err != nil {
 			return err
 		}
 	}

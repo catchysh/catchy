@@ -1,4 +1,4 @@
-package destination
+package handler
 
 import (
 	"context"
@@ -76,7 +76,7 @@ func TestValidate(t *testing.T) {
 		})
 	}
 	if _, err := Validate("smtp", Options{URL: u}, testEnv); err == nil {
-		t.Fatal("accepted an unknown protocol")
+		t.Fatal("accepted an unknown type")
 	}
 }
 
@@ -111,7 +111,7 @@ func TestPresetsAreValid(t *testing.T) {
 		if o.URL == "" {
 			o.URL = "https://example.com/hooks"
 		}
-		if _, err := Validate(p.Protocol, o, testEnv); err != nil {
+		if _, err := Validate(p.Type, o, testEnv); err != nil {
 			t.Errorf("preset %s: %v", p.Name, err)
 		}
 	}
@@ -186,8 +186,8 @@ func TestResendPreset(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.URL = srv.URL
-	s := &Sender{Dashboard: "https://catchy.test", Env: testEnv}
-	if _, err := s.Send(t.Context(), db.Destination{Protocol: HTTP, Options: o.JSON()}, testHook()); err != nil {
+	s := &Runner{Dashboard: "https://catchy.test", Env: testEnv}
+	if _, err := s.Run(t.Context(), db.Handler{Type: HTTP, Options: o.JSON()}, testHook()); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	var msg struct {
@@ -212,7 +212,7 @@ func TestResendPreset(t *testing.T) {
 	// Without an email field there's no reply_to, and the body is still JSON.
 	h := testHook()
 	h.ContentType, h.Body = "application/json", []byte(`{"event":"ping"}`)
-	if _, err := s.Send(t.Context(), db.Destination{Protocol: HTTP, Options: o.JSON()}, h); err != nil {
+	if _, err := s.Run(t.Context(), db.Handler{Type: HTTP, Options: o.JSON()}, h); err != nil {
 		t.Fatal(err)
 	}
 	if !json.Valid(c.body) || strings.Contains(string(c.body), "reply_to") {
@@ -221,7 +221,7 @@ func TestResendPreset(t *testing.T) {
 
 	// A provider error comes back with its message.
 	c.status = http.StatusUnprocessableEntity
-	_, err = s.Send(t.Context(), db.Destination{Protocol: HTTP, Options: o.JSON()}, testHook())
+	_, err = s.Run(t.Context(), db.Handler{Type: HTTP, Options: o.JSON()}, testHook())
 	if err == nil || !strings.Contains(err.Error(), "HTTP 422") || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("err = %v", err)
 	}
@@ -230,12 +230,12 @@ func TestResendPreset(t *testing.T) {
 func TestSendHTTP(t *testing.T) {
 	var c capture
 	srv := c.server(t)
-	s := &Sender{Env: testEnv}
+	s := &Runner{Env: testEnv}
 	h := testHook()
 
 	// Forwarding sends the hook as received, signed when asked.
 	o, _ := Validate(HTTP, Options{URL: srv.URL, SignWith: "WEBHOOK_SIGNING_SECRET", Headers: "X-Env: prod"}, testEnv)
-	if _, err := s.Send(t.Context(), db.Destination{Protocol: HTTP, Options: o.JSON()}, h); err != nil {
+	if _, err := s.Run(t.Context(), db.Handler{Type: HTTP, Options: o.JSON()}, h); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if string(c.body) != string(h.Body) || c.header.Get("Content-Type") != h.ContentType ||
@@ -249,7 +249,7 @@ func TestSendHTTP(t *testing.T) {
 
 	// A templated body is sent instead, with its content type.
 	o, _ = Validate(HTTP, Options{Method: "PUT", URL: srv.URL, Body: discordBody}, testEnv)
-	if _, err := s.Send(t.Context(), db.Destination{Protocol: HTTP, Options: o.JSON()}, h); err != nil {
+	if _, err := s.Run(t.Context(), db.Handler{Type: HTTP, Options: o.JSON()}, h); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if c.method != "PUT" || c.header.Get("Content-Type") != "application/json" || !strings.Contains(string(c.body), `"content": "New hook in #contact`) {
@@ -275,23 +275,23 @@ func TestWorker(t *testing.T) {
 	var c capture
 	srv := c.server(t)
 	o, _ := Validate(HTTP, Options{URL: srv.URL}, testEnv)
-	if _, err := database.CreateDestination(t.Context(), db.Destination{Name: "fwd", Protocol: HTTP, Options: o.JSON()}); err != nil {
+	if _, err := database.CreateHandler(t.Context(), db.Handler{Name: "fwd", Type: HTTP, Options: o.JSON()}); err != nil {
 		t.Fatal(err)
 	}
-	database.SetChannelDestinations(t.Context(), "contact", []string{"fwd"})
+	database.SetChannelHandlers(t.Context(), "contact", []string{"fwd"})
 
 	old := Backoff
 	Backoff = []time.Duration{time.Millisecond, time.Millisecond}
 	t.Cleanup(func() { Backoff = old })
-	w := &Worker{DB: database, Sender: &Sender{}}
+	w := &Worker{DB: database, Runner: &Runner{}}
 
 	catch := func() string {
 		h, err := database.CreateHook(t.Context(), db.Hook{Channel: "contact", Method: "POST", ContentType: "application/json", Body: []byte(`{"a":1}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n, err := database.EnqueueDeliveries(t.Context(), h.ID, "contact"); err != nil || n != 1 {
-			t.Fatalf("EnqueueDeliveries = %d, %v", n, err)
+		if n, err := database.EnqueueAttempts(t.Context(), h.ID, "contact"); err != nil || n != 1 {
+			t.Fatalf("EnqueueAttempts = %d, %v", n, err)
 		}
 		return h.ID
 	}
@@ -302,17 +302,17 @@ func TestWorker(t *testing.T) {
 		}
 	}
 	// status returns a hook's status and its tries, oldest first.
-	status := func(id string) (string, []db.Delivery) {
+	status := func(id string) (string, []db.Attempt) {
 		h, _ := database.GetHook(t.Context(), id)
-		dls, _ := database.HookDeliveries(t.Context(), []string{id})
+		dls, _ := database.HookAttempts(t.Context(), []string{id})
 		return h.Status, dls[id]
 	}
 
-	// Delivered: the hook becomes processed.
+	// Succeeded: the hook becomes handled.
 	ok := catch()
 	run()
-	if st, tries := status(ok); st != db.StatusProcessed || len(tries) != 1 || tries[0].Status != db.DeliveryDelivered ||
-		tries[0].HTTPStatus != 200 || tries[0].Attempt != 1 || tries[0].FinishedAt == nil {
+	if st, tries := status(ok); st != db.StatusHandled || len(tries) != 1 || tries[0].Status != db.AttemptSucceeded ||
+		tries[0].HTTPStatus != 200 || tries[0].Number != 1 || tries[0].FinishedAt == nil {
 		t.Fatalf("after success: hook %s, tries %+v", st, tries)
 	}
 	if string(c.body) != `{"a":1}` {
@@ -324,31 +324,54 @@ func TestWorker(t *testing.T) {
 	c.status = http.StatusInternalServerError
 	bad := catch()
 	run()
-	if st, tries := status(bad); st != db.StatusPending || len(tries) != 2 || tries[0].Status != db.DeliveryFailed ||
-		tries[0].HTTPStatus != 500 || !strings.Contains(tries[0].Error, "HTTP 500") || tries[1].Status != db.DeliveryPending || tries[1].Attempt != 2 {
+	if st, tries := status(bad); st != db.StatusPending || len(tries) != 2 || tries[0].Status != db.AttemptFailed ||
+		tries[0].HTTPStatus != 500 || !strings.Contains(tries[0].Error, "HTTP 500") || tries[1].Status != db.AttemptPending || tries[1].Number != 2 {
 		t.Fatalf("after first failure: hook %s, tries %+v", st, tries)
 	}
 	run()
 	run()
 	st, tries := status(bad)
-	if st != db.StatusFailed || len(tries) != 3 || tries[2].Status != db.DeliveryFailed || tries[2].Attempt != 3 {
+	if st != db.StatusFailed || len(tries) != 3 || tries[2].Status != db.AttemptFailed || tries[2].Number != 3 {
 		t.Fatalf("after giving up: hook %s, tries %+v", st, tries)
 	}
-	if h, _ := database.GetHook(t.Context(), bad); len(h.Failures) != 1 || !strings.HasPrefix(h.Failures[0].Message, "fwd: HTTP 500") {
-		t.Fatalf("failures = %+v", h.Failures)
+	if events, _ := database.HookEvents(t.Context(), []string{bad}); len(events[bad]) != 1 || events[bad][0].Kind != db.EventFailed ||
+		events[bad][0].Actor != "fwd" || !strings.HasPrefix(events[bad][0].Message, "HTTP 500") {
+		t.Fatalf("events = %+v", events[bad])
 	}
 
 	// Retrying the hook tries again from attempt 1; now it goes through.
 	c.status = 0
-	if _, err := database.SetHookStatus(t.Context(), bad, db.StatusPending, ""); err != nil {
+	if _, err := database.SetHookStatus(t.Context(), bad, db.StatusPending, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	run()
-	if st, tries := status(bad); st != db.StatusProcessed || len(tries) != 4 || tries[3].Status != db.DeliveryDelivered || tries[3].Attempt != 1 {
+	if st, tries := status(bad); st != db.StatusHandled || len(tries) != 4 || tries[3].Status != db.AttemptSucceeded || tries[3].Number != 1 {
 		t.Fatalf("after retry: hook %s, tries %+v", st, tries)
 	}
 
-	// Deleting a hook removes its deliveries; the worker isn't bothered.
+	// Discarding a hook cancels its queued attempts, and an attempt that was
+	// already running doesn't change its status or retry.
+	c.status = http.StatusInternalServerError
+	dropped := catch()
+	run()
+	if st, tries := status(dropped); st != db.StatusPending || len(tries) != 2 {
+		t.Fatalf("before discarding: hook %s, tries %+v", st, tries)
+	}
+	if _, err := database.SetHookStatus(t.Context(), dropped, db.StatusDiscarded, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if st, tries := status(dropped); st != db.StatusDiscarded || len(tries) != 1 {
+		t.Fatalf("after discarding: hook %s, tries %+v", st, tries)
+	}
+	if err := database.FinishAttempt(t.Context(), mustSchedule(t, database, dropped), db.Outcome{Error: "late"}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if st, tries := status(dropped); st != db.StatusDiscarded || len(tries) != 2 {
+		t.Fatalf("after a late attempt: hook %s, tries %+v", st, tries)
+	}
+	c.status = 0
+
+	// Deleting a hook removes its attempts; the worker isn't bothered.
 	gone := catch()
 	database.DeleteHook(t.Context(), gone)
 	run()
@@ -452,9 +475,9 @@ func TestEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Sender{Env: e}
-	dst := db.Destination{Protocol: HTTP, Options: o.JSON()}
-	if _, err := s.Send(t.Context(), dst, testHook()); err != nil {
+	s := &Runner{Env: e}
+	dst := db.Handler{Type: HTTP, Options: o.JSON()}
+	if _, err := s.Run(t.Context(), dst, testHook()); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if body != `{"to": "team@acme.dev", "subject": "New hook"}` || got.Header.Get("Authorization") != "Bearer re_env" || got.URL.Path != "/private-token" {
@@ -468,13 +491,27 @@ func TestEnv(t *testing.T) {
 
 	// Errors name the host only, since the URL can hold a secret.
 	e.Secrets["HOOK_URL"] = "http://127.0.0.1:1/private-token"
-	if _, err := s.Send(t.Context(), dst, testHook()); err == nil || strings.Contains(err.Error(), "private-token") {
+	if _, err := s.Run(t.Context(), dst, testHook()); err == nil || strings.Contains(err.Error(), "private-token") {
 		t.Fatalf("Send to a closed port = %v", err)
 	}
 
-	// A secret removed from the environment fails the delivery.
+	// A secret removed from the environment fails the attempt.
 	s.Env = env.Env{}
-	if _, err := s.Send(t.Context(), dst, testHook()); err == nil || !strings.Contains(err.Error(), "CATCHY_SECRET_HOOK_URL") {
+	if _, err := s.Run(t.Context(), dst, testHook()); err == nil || !strings.Contains(err.Error(), "CATCHY_SECRET_HOOK_URL") {
 		t.Fatalf("Send without the secret = %v", err)
 	}
+}
+
+// mustSchedule queues an attempt for hook on the "fwd" handler, as if it were
+// already running, and returns its ID.
+func mustSchedule(t *testing.T, database *db.DB, hook string) string {
+	t.Helper()
+	if _, err := database.EnqueueAttempts(t.Context(), hook, "contact"); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := database.HookAttempts(t.Context(), []string{hook})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return attempts[hook][len(attempts[hook])-1].ID
 }

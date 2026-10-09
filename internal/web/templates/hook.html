@@ -20,8 +20,8 @@
     </div>
     <div class="flex items-center gap-1.5">
       {{if eq .Status "pending"}}
-      <form method="POST" action="/hooks/{{.ID}}/process"><input type="hidden" name="back" value="{{$.Back}}">
-        <button type="submit" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 border border-emerald-200 hover:border-emerald-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Mark processed</button>
+      <form method="POST" action="/hooks/{{.ID}}/handle"><input type="hidden" name="back" value="{{$.Back}}">
+        <button type="submit" title="Mark as handled; nothing is run, and queued attempts are cancelled" class="text-xs font-medium text-emerald-700 hover:text-emerald-900 border border-emerald-200 hover:border-emerald-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Handle</button>
       </form>
       <form method="POST" action="/hooks/{{.ID}}/discard"><input type="hidden" name="back" value="{{$.Back}}">
         <button type="submit" class="text-xs font-medium text-gray-600 hover:text-gray-900 border border-gray-200 hover:border-gray-300 bg-white rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Discard</button>
@@ -36,16 +36,6 @@
       </form>
     </div>
   </header>
-  {{$failed := and (eq .Status "failed") .LastFailure}}
-  {{if $failed}}
-  <p class="px-5 py-2 text-sm bg-red-50 text-red-700 border-b border-red-100">{{.LastFailure.Message}} <span class="text-xs opacity-75 tabular-nums">&middot; {{.LastFailure.At}}{{if gt (len .Failures) 1}} &middot; failed {{len .Failures}} times{{end}}</span></p>
-  {{end}}
-  {{if and (not $failed) (or .Failures .FinalizedAt)}}
-  <p class="px-5 py-2 text-xs bg-gray-50 text-gray-500 border-b border-gray-100">
-    {{if .Failures}}{{if .FinalizedAt}}{{.Status}} <span class="tabular-nums">{{.FinalizedAt}}</span> &middot; {{end}}failed {{len .Failures}} {{if eq (len .Failures) 1}}time{{else}}times{{end}} before, last: <span class="text-gray-700">{{.LastFailure.Message}}</span>
-    {{else}}{{.Status}} <span class="tabular-nums">{{.FinalizedAt}}</span>{{end}}
-  </p>
-  {{end}}
   {{if .Payload}}
   <section aria-labelledby="payload-heading">
     <h3 id="payload-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Payload</h3>
@@ -64,20 +54,20 @@
     {{if .Body}}<pre class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">{{.Body}}</pre>{{else}}<p class="text-sm text-gray-400 italic">Body: {{.BodyNote}}</p>{{end}}
   </div>
   {{end}}
-  {{with .Deliveries}}
-  <section class="border-t border-gray-100" aria-labelledby="deliveries-heading">
-    <h3 id="deliveries-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Deliveries</h3>
+  {{with .Handlers}}
+  <section class="border-t border-gray-100" aria-labelledby="handlers-heading">
+    <h3 id="handlers-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Handlers</h3>
     <ul class="divide-y divide-gray-100">
       {{range .}}
       <li>
         <details class="group">
           <summary class="list-none [&::-webkit-details-marker]:hidden flex items-center gap-3 px-5 py-2 text-sm cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:bg-brand-50">
-            <span class="shrink-0 w-4 text-center {{if eq .Status "delivered"}}text-emerald-600{{else if eq .Status "failed"}}text-red-600{{else}}text-amber-600{{end}}" aria-hidden="true">{{if eq .Status "delivered"}}&#10003;{{else if eq .Status "failed"}}&#10007;{{else}}&#8635;{{end}}</span>
-            <span class="shrink-0 font-medium text-gray-900">{{.Destination}}</span>
-            <span class="shrink-0 text-xs {{if eq .Status "delivered"}}text-emerald-700{{else if eq .Status "failed"}}text-red-700{{else}}text-amber-700{{end}}">
-              {{- if eq .Status "delivered"}}delivered{{else if eq .Status "failed"}}gave up{{else if .NextAt}}retry at {{.NextAt}}{{else}}sending…{{end -}}
+            <span class="shrink-0 w-4 text-center {{if eq .Status "succeeded"}}text-emerald-600{{else if eq .Status "failed"}}text-red-600{{else}}text-amber-600{{end}}" aria-hidden="true">{{if eq .Status "succeeded"}}&#10003;{{else if eq .Status "failed"}}&#10007;{{else}}&#8635;{{end}}</span>
+            <span class="shrink-0 font-medium text-gray-900">{{.Handler}}</span>
+            <span class="shrink-0 text-xs {{if eq .Status "succeeded"}}text-emerald-700{{else if eq .Status "failed"}}text-red-700{{else}}text-amber-700{{end}}">
+              {{- if eq .Status "succeeded"}}succeeded{{else if eq .Status "failed"}}gave up{{else if .NextAt}}retry at {{.NextAt}}{{else}}sending…{{end -}}
             </span>
-            <span class="min-w-0 flex-1 truncate text-xs text-gray-500">{{if ne .Status "delivered"}}{{.LastError}}{{end}}</span>
+            <span class="min-w-0 flex-1 truncate text-xs text-gray-500">{{if ne .Status "succeeded"}}{{.LastError}}{{end}}</span>
             <span class="shrink-0 text-xs text-gray-400">{{.Attempts}} {{if eq .Attempts 1}}attempt{{else}}attempts{{end}}</span>
             <svg aria-hidden="true" class="shrink-0 w-4 h-4 text-gray-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
           </summary>
@@ -89,7 +79,7 @@
                 <tr>
                   <td class="py-1 pr-3 whitespace-nowrap tabular-nums text-gray-500"><span class="hidden sm:inline">{{.Date}} </span>{{.Time}}</td>
                   <td class="py-1 pr-3 whitespace-nowrap {{if .Error}}text-red-700{{else}}text-emerald-700{{end}}">{{if .Error}}&#10007;{{else}}&#10003;{{end}}{{if .Status}} {{.Status}}{{end}}</td>
-                  <td class="py-1 pr-3 w-full break-words {{if .Error}}text-gray-700{{else}}text-gray-500{{end}}">{{if .Error}}{{.Error}}{{else}}delivered{{end}}</td>
+                  <td class="py-1 pr-3 w-full break-words {{if .Error}}text-gray-700{{else}}text-gray-500{{end}}">{{if .Error}}{{.Error}}{{else}}succeeded{{end}}</td>
                   <td class="py-1 whitespace-nowrap text-right tabular-nums text-gray-400">{{.MS}} ms</td>
                 </tr>
                 {{end}}
@@ -105,15 +95,25 @@
     </ul>
   </section>
   {{end}}
-  {{/* The banner above already shows a lone current failure. */}}
-  {{if and .Failures (or (gt (len .Failures) 1) (not $failed))}}{{with .Failures}}
-  <section class="border-t border-gray-100" aria-labelledby="failures-heading">
-    <h3 id="failures-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Failures</h3>
-    <ol class="px-5 pb-3 space-y-1 text-xs">
-      {{range .}}<li class="flex gap-3"><time class="tabular-nums text-gray-500 shrink-0">{{.At}}</time><span class="text-red-700 break-words">{{.Message}}</span></li>{{end}}
+  <section class="border-t border-gray-100" aria-labelledby="activity-heading">
+    <h3 id="activity-heading" class="px-5 pt-3 pb-1 text-xs font-medium uppercase tracking-wider text-gray-500">Activity</h3>
+    <ol class="px-5 pb-3 space-y-1.5 text-xs">
+      {{range .Events}}
+      <li class="flex flex-wrap gap-x-3">
+        <time class="shrink-0 sm:w-36 tabular-nums text-gray-500">{{.At}}</time>
+        <span class="shrink-0 w-16 font-medium {{if eq .Kind "handled"}}text-emerald-700{{else if eq .Kind "failed"}}text-red-700{{else if eq .Kind "retried"}}text-amber-700{{else}}text-gray-600{{end}}">{{.Kind}}</span>
+        <span class="min-w-0 flex-1 break-words text-gray-600">
+          {{- if eq .Kind "failed"}}{{.Actor}}: {{.Message}}{{else if .Actor}}by {{.Actor}}{{else if eq .Kind "handled"}}all handlers succeeded{{end -}}
+        </span>
+      </li>
+      {{end}}
+      <li class="flex flex-wrap gap-x-3">
+        <time class="shrink-0 sm:w-36 tabular-nums text-gray-500">{{.CreatedAt}}</time>
+        <span class="shrink-0 w-16 font-medium text-gray-600">caught</span>
+        <span class="min-w-0 flex-1 break-words text-gray-600">in #{{.Channel}}{{with .IP}} from {{.}}{{end}}</span>
+      </li>
     </ol>
   </section>
-  {{end}}{{end}}
   <details class="border-t border-gray-100 group" open>
     <summary class="px-5 py-2 text-xs font-medium text-gray-500 hover:text-gray-900 cursor-pointer select-none">
       Raw request <span class="font-normal text-gray-400">&middot; {{.Method}}{{if .ContentType}} &middot; {{.ContentType}}{{end}}</span>

@@ -6,15 +6,14 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/catchysh/catchy)](go.mod)
 
 Self-hosted hook catcher. Point a webhook, a contact form, or a script at
-Catchy: every request is stored as received and shows up in your dashboard
-and API, ready for something else to process.
+Catchy: every request is checked by guards, stored as received, and handled
+by the handlers you attach — or kept as an inbox you go through yourself.
 
 - **One URL** — catch hooks with `POST /`, no setup and no keys needed
 - **Channels** — group hooks with `?channel=stripe`; channels appear on first use
 - **Raw capture** — method, query, headers, and the exact body (e.g. for signature checks), plus a decoded payload for JSON and forms
-- **Process outside** — consumers list pending hooks, handle them, and mark them `processed`, `failed`, or `discarded`
-- **Destinations** — send hooks over HTTP: email through Resend, Slack, Discord, or forward to any URL, with retries
 - **Guards** — honeypot, captchas (Cloudflare Turnstile, Google reCAPTCHA), webhook signatures (GitHub, Shopify, Stripe, HMAC), and tokens, attached per channel
+- **Handlers** — run on every hook: HTTP requests for email through Resend, Slack, Discord, or any URL, with retries and every attempt recorded
 - **Forms too** — open CORS; your page shows its own thank-you
 - **API** — REST, gRPC, gRPC-Web, and Connect on one endpoint
 
@@ -57,7 +56,7 @@ curl "https://catchy.example.com/?channel=signup" \
 The dashboard lists hooks a line each, newest first, filtered by channel and
 status. Each hook has its own page at its ID —
 `https://catchy.example.com/01k6z3x2b9e8v4m7q5w1t0r2y3` — with everything it
-carried, its deliveries, and its actions.
+carried, its handlers and their attempts, and its actions.
 
 Every hook is stored as received: method, query string, headers (except
 `Cookie`), content type, and the exact body, up to 1 MiB. Any content type is
@@ -188,14 +187,14 @@ sent along and checked by Catchy:
 <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 ```
 
-## Destinations
+## Handlers
 
-**Destinations** are where a channel's hooks are sent. Create them on the
-dashboard's **Destinations** page, then check them on a channel's page. Every
-hook caught there is queued for each destination and sent in the background.
+**Handlers** run on every hook a channel catches. Create them on the
+dashboard's **Handlers** page, then check them on a channel's page. Every hook
+caught there is queued for each handler and run in the background.
 
-A destination speaks a **protocol**; today that's `http`: a request to a URL
-with a method, optional headers, and an optional body template. An empty body
+A handler has a **type**; today that's `http`: a request to a URL with a
+method, optional headers, and an optional body template. An empty body
 forwards the hook as received. The URL, headers, and body are templates that
 can use [secrets](#secrets) by name: `Authorization: Bearer
 {{.Secrets.RESEND_API_KEY}}`, or a whole URL like
@@ -234,19 +233,20 @@ and the rest work too.)
 you'd rather set per deployment than write into templates: with
 `CATCHY_VAR_to=team@acme.dev`, `{{.Vars.to}}` is `team@acme.dev`. A missing
 one is empty, so `{{or .Vars.to "team@acme.dev"}}` gives a default. To vary a
-value by channel, use `{{if eq .Channel "sales"}}…{{end}}` or one destination
-per channel.
+value by channel, use `{{if eq .Channel "sales"}}…{{end}}` or one handler per
+channel.
 
 Anything in the payload comes from whoever sends the hook, so `from`, `to`,
-`cc`, and `bcc` in a JSON body can't use it: a destination that took its
+`cc`, and `bcc` in a JSON body can't use it: a handler that took its
 recipient from the hook would send email anywhere for anyone. Saving one is
 refused; use fixed addresses or variables. `reply_to` and `subject` can use
 the payload.
 
-A failed delivery is retried after 10s, 40s, 90s, and 160s, then given up.
-When every delivery of a hook succeeds, the hook becomes `processed`; when one
-gives up, it becomes `failed` with the reason, and **retry** sends its failed
-deliveries again. Each hook shows its deliveries in the dashboard.
+Each try is an **attempt**. A failed one is retried after 10s, 40s, 90s, and
+160s, then given up. When every handler of a hook succeeds, the hook becomes
+`handled`; when one gives up, it becomes `failed` with the reason, and
+**retry** runs its failed handlers again. Each hook's page lists its handlers
+with every attempt: when, the HTTP status, the error, and how long it took.
 
 ## Secrets
 
@@ -258,8 +258,8 @@ them, and the dashboard never asks for a value: templates write
 
 | Where | How |
 |---|---|
-| Destination URL, headers, body | `{{.Secrets.RESEND_API_KEY}}` |
-| Destination signing | **Sign with** `WEBHOOK_SIGNING_SECRET` |
+| Handler URL, headers, body | `{{.Secrets.RESEND_API_KEY}}` |
+| Handler signing | **Sign with** `WEBHOOK_SIGNING_SECRET` |
 | Guard | **Secret** `STRIPE_WEBHOOK_SECRET` |
 
 ```bash
@@ -267,9 +267,9 @@ CATCHY_SECRET_RESEND_API_KEY=re_…
 CATCHY_SECRET_STRIPE_WEBHOOK_SECRET=whsec_…
 ```
 
-A guard or destination can use a secret before it's set, so you can set it
+A guard or handler can use a secret before it's set, so you can set it
 up first and add the variable after. Until it's set — or if it's removed
-later — its guards refuse hooks and its deliveries fail, and Catchy says so:
+later — its guards refuse hooks and its handlers fail, and Catchy says so:
 a warning in the log at startup, a banner on every dashboard page, and the
 secret marked in red where it's used. Set or change a secret, then restart
 Catchy.
@@ -277,43 +277,32 @@ Catchy.
 Only `CATCHY_SECRET_` and `CATCHY_VAR_` variables are read, so Catchy's own
 settings and other software's secrets in a shared environment stay out of
 reach. But anyone signed in to the dashboard can use the secrets — for
-instance by creating a destination that sends one to a URL of theirs — as in
+instance by creating a handler that sends one to a URL of theirs — as in
 GitHub Actions, where anyone who can edit a workflow can use its secrets.
 Sign-in is limited by `ALLOWED_DOMAINS`; keep it to people you'd trust with
-them. Delivery errors mention a URL's host only, since the URL may hold a
+them. Handler errors mention a URL's host only, since the URL may hold a
 secret.
 
-## Processing hooks
-
-Catchy doesn't act on hooks itself; whatever processes them (a script, a
-worker, a notifier) runs outside and reports back through the hook's status:
+## Hook statuses
 
 | Status | Meaning |
 |---|---|
-| `pending` | Caught, waiting for a consumer (every hook starts here) |
-| `processed` | A consumer handled it |
-| `failed` | A consumer tried and couldn't, and said why |
-| `discarded` | Deliberately ignored |
+| `pending` | Caught, and its handlers are running or waiting for a retry; also where hooks without handlers stay, like an inbox, until you mark them handled |
+| `handled` | Every handler succeeded, or it was marked handled in the dashboard |
+| `failed` | A handler gave up after its retries |
+| `discarded` | Deliberately ignored; attempts still queued for it are cancelled |
 
-A consumer loop:
+Status follows the handlers. You can also **retry** a hook — its failed
+handlers run again — or **discard** it, from the dashboard or the API:
 
 ```bash
-# 1. fetch pending hooks of a channel
-curl -H "Authorization: Bearer $KEY" "$CATCHY/v1/hooks?channel=contact&status=pending"
-# 2. handle each one, then report back
-curl -H "Authorization: Bearer $KEY" -X POST "$CATCHY/v1/hooks/$ID/process"
-#    or, when it couldn't be handled:
-curl -H "Authorization: Bearer $KEY" -X POST "$CATCHY/v1/hooks/$ID/fail" \
-  -H "Content-Type: application/json" -d '{"message":"slack returned 500"}'
+curl -H "Authorization: Bearer $KEY" -X POST "$CATCHY/v1/hooks/$ID/retry"
+curl -H "Authorization: Bearer $KEY" -X POST "$CATCHY/v1/hooks/$ID/discard"
 ```
 
-Each `fail` adds its message to the hook's `failures` with the time; the list
-is kept when the hook is retried, so you can still see why it failed after
-it's processed. `process` and `discard` set `finalized_at`.
-
-`retry` sets a hook back to `pending` to process it again. Each channel reports how
-many of its hooks are in each status. Statuses can also be set from the
-dashboard.
+Every change is recorded with who made it — a handler, a person in the
+dashboard, or an API key — and a hook's page lists them under **Activity**.
+Each channel reports how many of its hooks are in each status.
 
 ## Build
 
@@ -345,8 +334,8 @@ docker compose up
 | `ALLOWED_DOMAINS` | Comma-separated list of allowed email domains | — (all allowed) |
 | `AUTO_CREATE_CHANNELS` | Let a hook to an unknown channel create it; `false` answers such hooks with `404` | `true` |
 | `TRUST_PROXY` | Take the sender's IP from `X-Forwarded-For` (`true` only behind a proxy that sets it) | — |
-| `CATCHY_VAR_*` | Variables for destination templates, as `{{.Vars.NAME}}` | — |
-| `CATCHY_SECRET_*` | [Secrets](#secrets) for destinations and guards, used by name: `CATCHY_SECRET_RESEND_API_KEY` is `RESEND_API_KEY` | — |
+| `CATCHY_VAR_*` | Variables for handler templates, as `{{.Vars.NAME}}` | — |
+| `CATCHY_SECRET_*` | [Secrets](#secrets) for handlers and guards, used by name: `CATCHY_SECRET_RESEND_API_KEY` is `RESEND_API_KEY` | — |
 
 ## Database
 
@@ -399,10 +388,8 @@ curl -H "Authorization: Bearer <api-key>" http://localhost:8080/v1/hooks
 |---|---|---|
 | `GET` | `/v1/hooks` | List hooks, newest first. Query: `channel`, `status`, `limit` (1–100, default 50), `after` (last hook ID of the previous page) |
 | `GET` | `/v1/hooks/{id}` | Get a hook |
-| `POST` | `/v1/hooks/{id}/process` | Mark a hook processed |
-| `POST` | `/v1/hooks/{id}/fail` | Mark a hook failed: `{"message": "…"}` |
-| `POST` | `/v1/hooks/{id}/discard` | Mark a hook discarded |
-| `POST` | `/v1/hooks/{id}/retry` | Set a hook back to pending |
+| `POST` | `/v1/hooks/{id}/discard` | Discard a hook, cancelling queued attempts |
+| `POST` | `/v1/hooks/{id}/retry` | Run a hook's failed handlers again |
 | `DELETE` | `/v1/hooks/{id}` | Delete a hook |
 | `GET` | `/v1/channels` | List channels with hook counts per status |
 | `GET` | `/v1/channels/{name}` | Get a channel |
@@ -417,7 +404,7 @@ the time a hook was caught. A hook:
 {
   "id": "01k6z3x2b9e8v4m7q5w1t0r2y3",
   "channel": "contact",
-  "status": "processed",
+  "status": "handled",
   "method": "POST",
   "query": "channel=contact",
   "headers": {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "Mozilla/5.0 …"},
@@ -425,13 +412,21 @@ the time a hook was caught. A hook:
   "body": "ZW1haWw9amFuZSU0MGV4YW1wbGUuY29tJm1lc3NhZ2U9SGklMjE=",
   "payload": {"email": "jane@example.com", "message": "Hi!"},
   "ip": "203.0.113.7",
-  "failures": [
-    {"at": "2026-10-07T12:00:05Z", "message": "slack returned 500"}
-  ],
   "created_at": "2026-10-07T12:00:00Z",
-  "finalized_at": "2026-10-07T12:01:00Z"
+  "finalized_at": "2026-10-07T12:01:00Z",
+  "events": [
+    {"kind": "failed", "actor": "slack", "message": "HTTP 500", "created_at": "2026-10-07T12:00:05Z"},
+    {"kind": "retried", "actor": "jane@acme.dev", "message": "", "created_at": "2026-10-07T12:00:40Z"},
+    {"kind": "handled", "actor": "", "message": "", "created_at": "2026-10-07T12:01:00Z"}
+  ]
 }
 ```
+
+`events` is what happened to the hook and who did it, oldest first: a handler
+that gave up (`failed`, with the handler as `actor`), or someone who
+`retried`, `discarded`, or `handled` it — a user's email from the dashboard,
+`api:` and the key's label from the API. An empty `actor` on `handled` means
+its handlers all succeeded.
 
 Over REST, `body` is base64-encoded. Only the body is stored; `payload` is
 decoded from it on every read, and is absent when the body isn't a

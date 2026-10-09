@@ -23,9 +23,9 @@ import (
 
 	"github.com/catchysh/catchy/internal/auth"
 	"github.com/catchysh/catchy/internal/db"
-	"github.com/catchysh/catchy/internal/destination"
 	"github.com/catchysh/catchy/internal/env"
 	"github.com/catchysh/catchy/internal/guard"
+	"github.com/catchysh/catchy/internal/handler"
 	"github.com/catchysh/catchy/internal/payload"
 )
 
@@ -70,7 +70,7 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, hostname, versio
 		},
 	}
 	h.login = template.Must(template.New("login.html").Funcs(funcs).ParseFS(templateFS, "templates/login.html"))
-	for _, p := range []string{"hooks", "hook", "channels", "channel", "guards", "destinations", "apikeys"} {
+	for _, p := range []string{"hooks", "hook", "channels", "channel", "guards", "handlers", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
 			templateFS,
 			"templates/layout.html",
@@ -118,14 +118,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /channels/{name}", h.ChannelPage)
 	mux.HandleFunc("POST /channels", h.createChannel)
 	mux.HandleFunc("POST /channels/{name}/guards", h.setChannelGuards)
-	mux.HandleFunc("POST /channels/{name}/destinations", h.setChannelDestinations)
-	mux.HandleFunc("GET /destinations", h.DestinationsPage)
-	mux.HandleFunc("POST /destinations", h.createDestination)
-	mux.HandleFunc("POST /destinations/{name}/delete", h.deleteDestination)
+	mux.HandleFunc("POST /channels/{name}/handlers", h.setChannelHandlers)
+	mux.HandleFunc("GET /handlers", h.HandlersPage)
+	mux.HandleFunc("POST /handlers", h.createHandler)
+	mux.HandleFunc("POST /handlers/{name}/delete", h.deleteHandler)
 	mux.HandleFunc("POST /channels/{name}/pause", h.pauseChannel)
 	mux.HandleFunc("POST /channels/{name}/resume", h.resumeChannel)
 	mux.HandleFunc("POST /channels/{name}/delete", h.deleteChannel)
-	mux.HandleFunc("POST /hooks/{id}/process", h.hookAction(db.StatusProcessed))
+	mux.HandleFunc("POST /hooks/{id}/handle", h.hookAction(db.StatusHandled))
 	mux.HandleFunc("POST /hooks/{id}/discard", h.hookAction(db.StatusDiscarded))
 	mux.HandleFunc("POST /hooks/{id}/retry", h.hookAction(db.StatusPending))
 	mux.HandleFunc("POST /hooks/{id}/delete", h.deleteHook)
@@ -144,18 +144,61 @@ type field struct {
 	Value string
 }
 
-type failureRow struct {
+// handlerSummary sums up a hook's handlers for the list: how many succeeded,
+// and the overall state: failed if one gave up, pending while one is still
+// running or retrying, succeeded otherwise.
+type handlerSummary struct {
+	State string
+	Done  int
+	Total int
+	Title string // each handler and how it went, one per line
+}
+
+func summarizeHandlers(rows []hookHandlerRow) *handlerSummary {
+	if len(rows) == 0 {
+		return nil
+	}
+	s := &handlerSummary{State: db.AttemptSucceeded, Total: len(rows)}
+	var lines []string
+	for _, r := range rows {
+		line := r.Handler + ": "
+		switch {
+		case r.Status == db.AttemptSucceeded:
+			s.Done++
+			line += "succeeded"
+		case r.Status == db.AttemptFailed:
+			s.State = db.AttemptFailed
+			line += "gave up: " + r.LastError
+		default:
+			if s.State != db.AttemptFailed {
+				s.State = db.AttemptPending
+			}
+			if r.NextAt != "" {
+				line += "retry at " + r.NextAt + ": " + r.LastError
+			} else {
+				line += "running"
+			}
+		}
+		lines = append(lines, line)
+	}
+	s.Title = strings.Join(lines, "\n")
+	return s
+}
+
+type eventRow struct {
 	At      string
+	Kind    string // one of the db.Event* constants
+	Actor   string
 	Message string
 }
 
-type deliveryRow struct {
-	Destination string
-	Status      string
-	Attempts    int
-	LastError   string
-	NextAt      string // when a pending delivery is tried next
-	History     []attemptRow
+type hookHandlerRow struct {
+	Handler   string
+	Status    string
+	Attempts  int
+	LastError string
+	NextAt    string // when a pending attempt is tried next
+	History   []attemptRow
 }
 
 type attemptRow struct {
@@ -167,27 +210,28 @@ type attemptRow struct {
 }
 
 type hookRow struct {
-	Deliveries  []deliveryRow
-	ID          string
-	Channel     string
-	Status      string
-	Failures    []failureRow // oldest first
-	LastFailure *failureRow
-	Method      string
-	ContentType string
-	Payload     []field // decoded body; nil when the body isn't JSON or a form
-	Body        string  // raw body as text; empty when binary or empty
-	BodyNote    string  // shown instead of Body: "empty" or "binary, N bytes"
-	Headers     []field
-	IP          string
-	UserAgent   string
-	Referer     string
-	CreatedAt   string
-	CreatedISO  string
-	Ago         string // CreatedAt relative to now, e.g. "5m ago"
-	FinalizedAt string // when processed or discarded; empty otherwise
-	Summary     string // one line for the list: the first fields, or the body
-	URL         string // its page, keeping the list's filters
+	Handlers       []hookHandlerRow
+	ID             string
+	Channel        string
+	Status         string
+	HandlerSummary *handlerSummary // nil without handlers
+	Events         []eventRow      // newest first
+	LastFailure    *eventRow       // the latest failure, while the hook is failed
+	Method         string
+	ContentType    string
+	Payload        []field // decoded body; nil when the body isn't JSON or a form
+	Body           string  // raw body as text; empty when binary or empty
+	BodyNote       string  // shown instead of Body: "empty" or "binary, N bytes"
+	Headers        []field
+	IP             string
+	UserAgent      string
+	Referer        string
+	CreatedAt      string
+	CreatedISO     string
+	Ago            string // CreatedAt relative to now, e.g. "5m ago"
+	FinalizedAt    string // when handled or discarded; empty otherwise
+	Summary        string // one line for the list: the first fields, or the body
+	URL            string // its page, keeping the list's filters
 }
 
 type statusTab struct {
@@ -204,7 +248,7 @@ func statusTabs(stats db.ChannelStats, active string, urlFor func(status string)
 	tabs := []statusTab{
 		{Label: "All", Count: stats.Total()},
 		{Label: "Pending", Status: db.StatusPending, Count: stats.Pending},
-		{Label: "Processed", Status: db.StatusProcessed, Count: stats.Processed},
+		{Label: "Handled", Status: db.StatusHandled, Count: stats.Handled},
 		{Label: "Failed", Status: db.StatusFailed, Count: stats.Failed},
 		{Label: "Discarded", Status: db.StatusDiscarded, Count: stats.Discarded},
 	}
@@ -311,7 +355,7 @@ func (h *Handler) HooksPage(w http.ResponseWriter, r *http.Request) {
 		data.Channels = append(data.Channels, channelOption{Name: c.Name, Selected: c.Name == selected})
 		if selected == "" || c.Name == selected {
 			stats.Pending += c.Stats.Pending
-			stats.Processed += c.Stats.Processed
+			stats.Handled += c.Stats.Handled
 			stats.Failed += c.Stats.Failed
 			stats.Discarded += c.Stats.Discarded
 		}
@@ -343,33 +387,41 @@ func (h *Handler) HooksPage(w http.ResponseWriter, r *http.Request) {
 	for i, hk := range hooks {
 		ids[i] = hk.ID
 	}
-	deliveries, err := h.db.HookDeliveries(r.Context(), ids)
+	attempts, err := h.db.HookAttempts(r.Context(), ids)
 	if err != nil {
-		log.Printf("listing deliveries: %v", err)
+		log.Printf("listing attempts: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	events, err := h.db.HookEvents(r.Context(), ids)
+	if err != nil {
+		log.Printf("listing events: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	for _, hk := range hooks {
 		row := newHookRow(&hk)
-		row.Deliveries = deliveryRows(deliveries[hk.ID])
+		row.Handlers = hookHandlerRows(attempts[hk.ID])
+		row.HandlerSummary = summarizeHandlers(row.Handlers)
+		row.setEvents(events[hk.ID])
 		row.URL = hookURL(hk.ID, selected, status)
 		data.Hooks = append(data.Hooks, row)
 	}
 	h.render(w, "hooks", data)
 }
 
-// deliveryRows sums up a hook's tries per destination: its state is the
+// hookHandlerRows sums up a hook's tries per handler: its state is the
 // latest try, and the tried ones are its history. dls is sorted by
-// destination, oldest first.
-func deliveryRows(dls []db.Delivery) []deliveryRow {
-	var rows []deliveryRow
+// handler, oldest first.
+func hookHandlerRows(dls []db.Attempt) []hookHandlerRow {
+	var rows []hookHandlerRow
 	for _, dl := range dls {
-		if n := len(rows); n == 0 || rows[n-1].Destination != dl.Destination {
-			rows = append(rows, deliveryRow{Destination: dl.Destination})
+		if n := len(rows); n == 0 || rows[n-1].Handler != dl.Handler {
+			rows = append(rows, hookHandlerRow{Handler: dl.Handler})
 		}
 		row := &rows[len(rows)-1]
 		row.Status = dl.Status
-		if dl.Status == db.DeliveryPending {
+		if dl.Status == db.AttemptPending {
 			// A pending try after failed ones is a retry: say when.
 			if row.Attempts > 0 {
 				row.NextAt = dl.DueAt.Local().Format("15:04:05")
@@ -441,13 +493,19 @@ func (h *Handler) HookPage(w http.ResponseWriter, r *http.Request) {
 		status = ""
 	}
 
-	deliveries, err := h.db.HookDeliveries(r.Context(), []string{id})
+	attempts, err := h.db.HookAttempts(r.Context(), []string{id})
 	if err != nil {
-		h.dbError(w, r, "listing deliveries", err)
+		h.dbError(w, r, "listing attempts", err)
+		return
+	}
+	events, err := h.db.HookEvents(r.Context(), []string{id})
+	if err != nil {
+		h.dbError(w, r, "listing events", err)
 		return
 	}
 	row := newHookRow(hk)
-	row.Deliveries = deliveryRows(deliveries[id])
+	row.Handlers = hookHandlerRows(attempts[id])
+	row.setEvents(events[id])
 	data := hookData{
 		layoutData: layoutData{ActiveTab: "hooks", Title: "Hook " + id, User: user},
 		Hook:       row,
@@ -522,15 +580,15 @@ func (h *Handler) ChannelsPage(w http.ResponseWriter, r *http.Request) {
 
 type channelData struct {
 	layoutData
-	Channel      *db.Channel
-	HookURL      string // where to send hooks to this channel
-	HooksURL     string // the hooks page filtered to it
-	Statuses     []statusTab
-	Guards       []guardOption
-	Honeypot     string
-	Destinations []guardOption // reuses guardOption: name, summary, attached
-	Captcha      string        // the captcha scheme the channel requires, if any
-	HMAC         *hmacSnippet  // set when the channel requires an hmac signature
+	Channel  *db.Channel
+	HookURL  string // where to send hooks to this channel
+	HooksURL string // the hooks page filtered to it
+	Statuses []statusTab
+	Guards   []guardOption
+	Honeypot string
+	Handlers []guardOption // reuses guardOption: name, summary, attached
+	Captcha  string        // the captcha scheme the channel requires, if any
+	HMAC     *hmacSnippet  // set when the channel requires an hmac signature
 }
 
 func (h *Handler) ChannelPage(w http.ResponseWriter, r *http.Request) {
@@ -574,21 +632,39 @@ func (h *Handler) ChannelPage(w http.ResponseWriter, r *http.Request) {
 			data.HMAC = &hmacSnippet{Header: opts.Header, Algorithm: opts.Algorithm, Base64: opts.Encoding == "base64", Prefix: opts.Prefix}
 		}
 	}
-	dsts, err := h.db.ListDestinations(r.Context())
+	dsts, err := h.db.ListHandlers(r.Context())
 	if err != nil {
-		log.Printf("listing destinations: %v", err)
+		log.Printf("listing handlers: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	for _, dst := range dsts {
-		opts, _ := destination.ParseOptions(dst.Options)
-		data.Destinations = append(data.Destinations, guardOption{
+		opts, _ := handler.ParseOptions(dst.Options)
+		data.Handlers = append(data.Handlers, guardOption{
 			Name:    dst.Name,
-			Kind:    destination.Describe(dst.Protocol, opts),
+			Kind:    handler.Describe(dst.Type, opts),
 			Enabled: slices.Contains(dst.Channels, c.Name),
 		})
 	}
 	h.render(w, "channel", data)
+}
+
+// setEvents adds a hook's events, oldest first, as its activity, newest
+// first, and notes its latest failure while it's failed.
+func (row *hookRow) setEvents(events []db.Event) {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		row.Events = append(row.Events, eventRow{At: e.CreatedAt.Local().Format(time.DateTime), Kind: e.Kind, Actor: e.Actor, Message: e.Message})
+	}
+	if row.Status != db.StatusFailed {
+		return
+	}
+	for i := range row.Events {
+		if row.Events[i].Kind == db.EventFailed {
+			row.LastFailure = &row.Events[i]
+			return
+		}
+	}
 }
 
 func newHookRow(hk *db.Hook) hookRow {
@@ -607,12 +683,6 @@ func newHookRow(hk *db.Hook) hookRow {
 	}
 	if hk.FinalizedAt != nil {
 		row.FinalizedAt = hk.FinalizedAt.Local().Format(time.DateTime)
-	}
-	for _, f := range hk.Failures {
-		row.Failures = append(row.Failures, failureRow{At: f.At.Local().Format(time.DateTime), Message: f.Message})
-	}
-	if n := len(row.Failures); n > 0 {
-		row.LastFailure = &row.Failures[n-1]
 	}
 	if data := payload.Decode(hk.ContentType, hk.Body); data != nil {
 		row.Payload = fields(data)
@@ -734,7 +804,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, channelURL(name), http.StatusSeeOther)
 }
 
-func (h *Handler) setChannelDestinations(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) setChannelHandlers(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
 		return
@@ -744,8 +814,8 @@ func (h *Handler) setChannelDestinations(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	if err := h.db.SetChannelDestinations(r.Context(), name, r.Form["destination"]); err != nil {
-		h.dbError(w, r, "setting channel destinations", err)
+	if err := h.db.SetChannelHandlers(r.Context(), name, r.Form["handler"]); err != nil {
+		h.dbError(w, r, "setting channel handlers", err)
 		return
 	}
 	http.Redirect(w, r, channelURL(name), http.StatusSeeOther)
@@ -808,7 +878,7 @@ func (h *Handler) hookAction(status string) http.HandlerFunc {
 		if user == nil {
 			return
 		}
-		if _, err := h.db.SetHookStatus(r.Context(), r.PathValue("id"), status, ""); err != nil {
+		if _, err := h.db.SetHookStatus(r.Context(), r.PathValue("id"), status, user.Email, ""); err != nil {
 			h.dbError(w, r, "updating hook", err)
 			return
 		}
@@ -1002,9 +1072,9 @@ func (h *Handler) deleteGuard(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/guards", http.StatusSeeOther)
 }
 
-// Destinations
+// Handlers
 
-type destinationRow struct {
+type handlerRow struct {
 	Name     string
 	Kind     string
 	Secrets  []string // names of the secrets it uses
@@ -1012,23 +1082,23 @@ type destinationRow struct {
 	Channels []string
 }
 
-type destinationsData struct {
+type handlersData struct {
 	layoutData
-	Destinations []destinationRow
-	Presets      []destination.PresetGroup
-	Protocols    []string
-	Error        string
-	Form         destinationForm
-	Env          env.Env
+	Handlers []handlerRow
+	Presets  []handler.PresetGroup
+	Types    []string
+	Error    string
+	Form     handlerForm
+	Env      env.Env
 }
 
-// destinationForm is the Create destination form's input, kept when creating
+// handlerForm is the Create handler form's input, kept when creating
 // fails.
-type destinationForm struct {
+type handlerForm struct {
 	Restore     bool
 	Preset      string
 	Name        string
-	Protocol    string
+	Type        string
 	Method      string
 	URL         string
 	Headers     string
@@ -1037,35 +1107,35 @@ type destinationForm struct {
 	Body        string
 }
 
-func (h *Handler) DestinationsPage(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandlersPage(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
 		return
 	}
-	h.renderDestinations(w, r, user, r.URL.Query().Get("error"), destinationForm{})
+	h.renderHandlers(w, r, user, r.URL.Query().Get("error"), handlerForm{})
 }
 
-func (h *Handler) renderDestinations(w http.ResponseWriter, r *http.Request, user *db.User, errMsg string, form destinationForm) {
-	dsts, err := h.db.ListDestinations(r.Context())
+func (h *Handler) renderHandlers(w http.ResponseWriter, r *http.Request, user *db.User, errMsg string, form handlerForm) {
+	dsts, err := h.db.ListHandlers(r.Context())
 	if err != nil {
-		log.Printf("listing destinations: %v", err)
+		log.Printf("listing handlers: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	data := destinationsData{
-		layoutData: layoutData{ActiveTab: "destinations", Title: "Destinations", User: user},
+	data := handlersData{
+		layoutData: layoutData{ActiveTab: "handlers", Title: "Handlers", User: user},
 		Env:        h.env,
-		Presets:    destination.PresetGroups(),
-		Protocols:  destination.Protocols,
+		Presets:    handler.PresetGroups(),
+		Types:      handler.Types,
 		Error:      errMsg,
 		Form:       form,
 	}
 	for _, dst := range dsts {
-		opts, _ := destination.ParseOptions(dst.Options)
-		row := destinationRow{
+		opts, _ := handler.ParseOptions(dst.Options)
+		row := handlerRow{
 			Name:     dst.Name,
-			Kind:     destination.Describe(dst.Protocol, opts),
-			Secrets:  destination.SecretsUsed(opts),
+			Kind:     handler.Describe(dst.Type, opts),
+			Secrets:  handler.SecretsUsed(opts),
 			Channels: dst.Channels,
 		}
 		for _, name := range row.Secrets {
@@ -1073,24 +1143,24 @@ func (h *Handler) renderDestinations(w http.ResponseWriter, r *http.Request, use
 				row.Missing = append(row.Missing, name)
 			}
 		}
-		data.Destinations = append(data.Destinations, row)
+		data.Handlers = append(data.Handlers, row)
 	}
 	if form.Restore {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 	}
-	h.render(w, "destinations", data)
+	h.render(w, "handlers", data)
 }
 
-func (h *Handler) createDestination(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createHandler(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
 		return
 	}
-	form := destinationForm{
+	form := handlerForm{
 		Restore:     true,
 		Preset:      r.FormValue("preset"),
 		Name:        strings.ToLower(strings.TrimSpace(r.FormValue("name"))),
-		Protocol:    r.FormValue("protocol"),
+		Type:        r.FormValue("type"),
 		Method:      r.FormValue("method"),
 		URL:         strings.TrimSpace(r.FormValue("url")),
 		Headers:     r.FormValue("headers"),
@@ -1098,9 +1168,9 @@ func (h *Handler) createDestination(w http.ResponseWriter, r *http.Request) {
 		SignWith:    strings.TrimSpace(r.FormValue("sign_with")),
 		Body:        r.FormValue("body"),
 	}
-	fail := func(msg string) { h.renderDestinations(w, r, user, msg, form) }
+	fail := func(msg string) { h.renderHandlers(w, r, user, msg, form) }
 	if !db.ValidChannel(form.Name) {
-		fail("Destination names are up to 64 lowercase letters and digits, separated by single _ or -.")
+		fail("Handler names are up to 64 lowercase letters and digits, separated by single _ or -.")
 		return
 	}
 	signWith := form.SignWith
@@ -1108,7 +1178,7 @@ func (h *Handler) createDestination(w http.ResponseWriter, r *http.Request) {
 		fail("Secret names are letters, digits, and _.")
 		return
 	}
-	opts, err := destination.Validate(form.Protocol, destination.Options{
+	opts, err := handler.Validate(form.Type, handler.Options{
 		Method: form.Method, URL: form.URL, Headers: form.Headers, ContentType: form.ContentType, SignWith: signWith, Body: form.Body,
 	}, h.env)
 	if err != nil {
@@ -1116,32 +1186,32 @@ func (h *Handler) createDestination(w http.ResponseWriter, r *http.Request) {
 		fail(strings.ToUpper(msg[:1]) + msg[1:] + ".")
 		return
 	}
-	dst := db.Destination{Name: form.Name, Protocol: form.Protocol, Options: opts.JSON()}
-	if _, err := h.db.CreateDestination(r.Context(), dst); err != nil {
+	dst := db.Handler{Name: form.Name, Type: form.Type, Options: opts.JSON()}
+	if _, err := h.db.CreateHandler(r.Context(), dst); err != nil {
 		if strings.Contains(err.Error(), "already exists") {
-			fail("A destination named " + form.Name + " already exists.")
+			fail("A handler named " + form.Name + " already exists.")
 			return
 		}
-		h.dbError(w, r, "creating destination", err)
+		h.dbError(w, r, "creating handler", err)
 		return
 	}
-	http.Redirect(w, r, "/destinations", http.StatusSeeOther)
+	http.Redirect(w, r, "/handlers", http.StatusSeeOther)
 }
 
-func (h *Handler) deleteDestination(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
 		return
 	}
-	if err := h.db.DeleteDestination(r.Context(), r.PathValue("name")); err != nil {
-		if errors.Is(err, db.ErrDestinationInUse) {
-			http.Redirect(w, r, "/destinations?error="+url.QueryEscape("Detach "+r.PathValue("name")+" from its channels before deleting it."), http.StatusSeeOther)
+	if err := h.db.DeleteHandler(r.Context(), r.PathValue("name")); err != nil {
+		if errors.Is(err, db.ErrHandlerInUse) {
+			http.Redirect(w, r, "/handlers?error="+url.QueryEscape("Detach "+r.PathValue("name")+" from its channels before deleting it."), http.StatusSeeOther)
 			return
 		}
-		h.dbError(w, r, "deleting destination", err)
+		h.dbError(w, r, "deleting handler", err)
 		return
 	}
-	http.Redirect(w, r, "/destinations", http.StatusSeeOther)
+	http.Redirect(w, r, "/handlers", http.StatusSeeOther)
 }
 
 // API keys

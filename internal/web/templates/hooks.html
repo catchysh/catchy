@@ -32,7 +32,7 @@
           <th class="px-4 py-3">Status</th>
           {{if not $.Channel}}<th class="px-4 py-3">Channel</th>{{end}}
           <th class="px-4 py-3">Payload</th>
-          <th class="px-4 py-3 hidden sm:table-cell">Deliveries</th>
+          <th class="px-4 py-3 hidden sm:table-cell">Handlers</th>
           <th class="px-4 py-3 text-right">Received</th>
         </tr>
       </thead>
@@ -45,14 +45,16 @@
           <td class="px-4 py-2.5 max-w-0 w-full">
             {{/* The link covers the whole row (after:inset-0), so any cell opens the hook. */}}
             <a href="{{.URL}}" class="block truncate focus:outline-none after:absolute after:inset-0 {{if .Summary}}text-gray-900{{else}}text-gray-400{{end}}">{{if .Summary}}{{.Summary}}{{else}}{{.BodyNote}}{{end}}</a>
-            {{if and (eq .Status "failed") .LastFailure}}<p class="truncate text-xs text-red-700" title="{{.LastFailure.Message}}">{{.LastFailure.Message}}</p>{{end}}
+            {{if and (eq .Status "failed") .LastFailure}}<p class="truncate text-xs text-red-700" title="{{.LastFailure.Actor}}: {{.LastFailure.Message}}">{{.LastFailure.Actor}}: {{.LastFailure.Message}}</p>{{end}}
           </td>
           <td class="px-4 py-2.5 hidden sm:table-cell whitespace-nowrap text-xs">
-            {{/* A dot per destination; hovering names it and says how it went. */}}
-            <span class="inline-flex flex-wrap items-center gap-1">
-            {{range .Deliveries}}<span class="w-2.5 h-2.5 rounded-full {{if eq .Status "delivered"}}bg-emerald-500{{else if eq .Status "failed"}}bg-red-500{{else}}bg-amber-400{{end}}"
-              title="{{.Destination}}: {{if eq .Status "delivered"}}delivered{{else if eq .Status "failed"}}gave up: {{.LastError}}{{else if .NextAt}}retry at {{.NextAt}}: {{.LastError}}{{else}}sending{{end}}"></span><span class="sr-only">{{.Destination}} {{.Status}};</span>{{else}}<span class="text-gray-300">—</span>{{end}}
+            {{/* How many handlers succeeded, with the overall state; hovering lists each. */}}
+            {{with .HandlerSummary}}
+            <span class="inline-flex items-center gap-1 font-medium tabular-nums {{if eq .State "failed"}}text-red-700{{else if eq .State "pending"}}text-amber-700{{else}}text-emerald-700{{end}}" title="{{.Title}}">
+              <span aria-hidden="true">{{if eq .State "failed"}}&#10007;{{else if eq .State "pending"}}&#8635;{{else}}&#10003;{{end}}</span>
+              <span class="sr-only">{{.State}}:</span>{{.Done}}/{{.Total}}
             </span>
+            {{else}}<span class="text-gray-300">—</span>{{end}}
           </td>
           <td class="px-4 py-2.5 whitespace-nowrap text-right text-xs tabular-nums text-gray-500"><time datetime="{{.CreatedISO}}" title="{{.CreatedAt}}">{{.Ago}}</time></td>
         </tr>

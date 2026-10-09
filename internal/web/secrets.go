@@ -5,20 +5,20 @@ import (
 	"slices"
 
 	"github.com/catchysh/catchy/internal/db"
-	"github.com/catchysh/catchy/internal/destination"
 	"github.com/catchysh/catchy/internal/env"
+	"github.com/catchysh/catchy/internal/handler"
 )
 
-// MissingSecret is a secret that guards or destinations use but the
+// MissingSecret is a secret that guards or handlers use but the
 // environment doesn't set.
 type MissingSecret struct {
 	Name   string
-	UsedBy []string // e.g. "guard stripe", "destination slack"
+	UsedBy []string // e.g. "guard stripe", "handler slack"
 }
 
 // MissingSecrets returns the secrets that are used but not set, sorted by
 // name. Secrets live in the environment, so one can disappear on any
-// restart; guards that need it then refuse hooks and destinations fail.
+// restart; guards that need it then refuse hooks and handlers fail.
 func MissingSecrets(ctx context.Context, database *db.DB, e env.Env) ([]MissingSecret, error) {
 	used := map[string][]string{}
 	guards, err := database.ListGuards(ctx)
@@ -30,14 +30,14 @@ func MissingSecrets(ctx context.Context, database *db.DB, e env.Env) ([]MissingS
 			used[g.Secret] = append(used[g.Secret], "guard "+g.Name)
 		}
 	}
-	dsts, err := database.ListDestinations(ctx)
+	dsts, err := database.ListHandlers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, dst := range dsts {
-		opts, _ := destination.ParseOptions(dst.Options)
-		for _, name := range destination.SecretsUsed(opts) {
-			used[name] = append(used[name], "destination "+dst.Name)
+		opts, _ := handler.ParseOptions(dst.Options)
+		for _, name := range handler.SecretsUsed(opts) {
+			used[name] = append(used[name], "handler "+dst.Name)
 		}
 	}
 	var missing []MissingSecret

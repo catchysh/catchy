@@ -90,16 +90,17 @@ func call(t *testing.T, srv *httptest.Server, method, path, key, contentType, bo
 }
 
 type apiHook struct {
-	ID       string            `json:"id"`
-	Channel  string            `json:"channel"`
-	Status   string            `json:"status"`
-	Headers  map[string]string `json:"headers"`
-	Body     []byte            `json:"body"` // base64 in JSON
-	Payload  map[string]any    `json:"payload"`
-	Failures []struct {
-		At      string `json:"at"`
+	ID      string            `json:"id"`
+	Channel string            `json:"channel"`
+	Status  string            `json:"status"`
+	Headers map[string]string `json:"headers"`
+	Body    []byte            `json:"body"` // base64 in JSON
+	Payload map[string]any    `json:"payload"`
+	Events  []struct {
+		Kind    string `json:"kind"`
+		Actor   string `json:"actor"`
 		Message string `json:"message"`
-	} `json:"failures"`
+	} `json:"events"`
 	FinalizedAt *string `json:"finalized_at"`
 }
 
@@ -108,8 +109,8 @@ type apiChannel struct {
 	Paused bool     `json:"paused"`
 	Guards []string `json:"guards"`
 	Stats  struct {
-		Pending   string `json:"pending"` // int64 is a JSON string
-		Processed string `json:"processed"`
+		Pending string `json:"pending"` // int64 is a JSON string
+		Handled string `json:"handled"`
 	} `json:"stats"`
 }
 
@@ -146,43 +147,29 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("second page = %+v", page)
 	}
 
-	// A consumer processes pending hooks and reports back.
-	var updated apiHook
-	if code := call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/fail", key, "application/json", `{"message":"slack 500"}`, &updated); code != 200 {
-		t.Fatalf("FailHook: %d", code)
-	}
-	if updated.Status != "failed" || len(updated.Failures) != 1 || updated.Failures[0].Message != "slack 500" || updated.FinalizedAt != nil {
-		t.Fatalf("updated = %+v", updated)
-	}
-	if code := call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/fail", key, "application/json", `{}`, nil); code != 400 {
-		t.Fatalf("FailHook without message: %d, want 400", code)
-	}
-	if code := call(t, srv, "POST", "/v1/hooks/01m4bdkawf4vkn58kbtxrdqnyg/process", key, "application/json", `{}`, nil); code != 404 {
-		t.Fatalf("ProcessHook on a missing hook: %d, want 404", code)
-	}
-	var pending []apiHook
-	call(t, srv, "GET", "/v1/hooks?status=pending", key, "", "", &pending)
-	if len(pending) != 1 || pending[0].ID != all[0].ID {
-		t.Fatalf("pending hooks = %+v", pending)
-	}
-
+	// Hooks can be discarded and retried; processing and failing come
+	// from attempts, not the API.
 	var got apiHook
-	if code := call(t, srv, "GET", "/v1/hooks/"+contact[0].ID, key, "", "", &got); code != 200 || got.Status != "failed" {
+	if code := call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/discard", key, "application/json", `{}`, &got); code != 200 || got.Status != "discarded" || got.FinalizedAt == nil {
+		t.Fatalf("discarded hook: %d %+v", code, got)
+	}
+	if code := call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/retry", key, "application/json", `{}`, &got); code != 200 || got.Status != "pending" {
+		t.Fatalf("retried hook: %d %+v", code, got)
+	}
+	// Both are events, by the API key.
+	if len(got.Events) != 2 || got.Events[0].Kind != "discarded" || got.Events[1].Kind != "retried" || got.Events[1].Actor != "api:test" {
+		t.Fatalf("events = %+v", got.Events)
+	}
+	if code := call(t, srv, "POST", "/v1/hooks/01m4bdkawf4vkn58kbtxrdqnyg/discard", key, "application/json", `{}`, nil); code != 404 {
+		t.Fatalf("DiscardHook on a missing hook: %d, want 404", code)
+	}
+	for _, verb := range []string{"process", "fail"} {
+		if code := call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/"+verb, key, "application/json", `{}`, nil); code != 404 && code != 405 {
+			t.Fatalf("POST /%s still answers: %d", verb, code)
+		}
+	}
+	if code := call(t, srv, "GET", "/v1/hooks/"+contact[0].ID, key, "", "", &got); code != 200 || got.Status != "pending" {
 		t.Fatalf("GetHook: %d %+v", code, got)
-	}
-
-	// Processing it later keeps the failure and sets finalized_at.
-	call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/retry", key, "application/json", `{}`, &got)
-	if got.Status != "pending" || len(got.Failures) != 1 {
-		t.Fatalf("retried hook = %+v", got)
-	}
-	call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/process", key, "application/json", `{}`, &got)
-	if got.Status != "processed" || len(got.Failures) != 1 || got.FinalizedAt == nil {
-		t.Fatalf("processed hook = %+v", got)
-	}
-	call(t, srv, "POST", "/v1/hooks/"+contact[0].ID+"/discard", key, "application/json", `{}`, &got)
-	if got.Status != "discarded" || got.FinalizedAt == nil {
-		t.Fatalf("discarded hook = %+v", got)
 	}
 
 	var channels []apiChannel
@@ -313,13 +300,13 @@ func TestDashboard(t *testing.T) {
 	code, body = page("GET", "/", "")
 	if code != 200 || !strings.Contains(body, "jane@example.com · Hello &lt;b&gt;there&lt;/b&gt;") || !strings.Contains(body, "bob@example.com") ||
 		!strings.Contains(body, "&lt;event&gt;ping&lt;/event&gt;") || !strings.Contains(body, "#newsletter</td>") ||
-		!strings.Contains(body, `href="/`+contact[0].ID+`"`) || strings.Contains(body, "Mark processed") {
+		!strings.Contains(body, `href="/`+contact[0].ID+`"`) || strings.Contains(body, ">Handle</button>") {
 		t.Fatalf("hooks page: %d\n%s", code, body)
 	}
 
 	// A hook's page has everything, with actions and links back to its list.
 	code, body = page("GET", "/"+contact[0].ID+"?channel=contact", "")
-	if code != 200 || !strings.Contains(body, "Hello &lt;b&gt;there&lt;/b&gt;") || !strings.Contains(body, "Mark processed") ||
+	if code != 200 || !strings.Contains(body, "Hello &lt;b&gt;there&lt;/b&gt;") || !strings.Contains(body, ">Handle</button>") ||
 		!strings.Contains(body, "Raw request") || !strings.Contains(body, `href="/?channel=contact"`) || !strings.Contains(body, "· #contact") {
 		t.Fatalf("hook page: %d\n%s", code, body)
 	}
@@ -364,33 +351,36 @@ func TestDashboard(t *testing.T) {
 		t.Fatalf("missing channel page: %d, want 404", code)
 	}
 
-	// Mark the newsletter hook processed, then filter by status.
+	// Mark the newsletter hook handled, then filter by status.
 	hooks, _ := database.ListHooks(t.Context(), db.HookFilter{Channel: "newsletter"}, 10)
-	page("POST", "/hooks/"+hooks[0].ID+"/process", "back=%2F%3Fchannel%3Dnewsletter")
-	if hk, _ := database.GetHook(t.Context(), hooks[0].ID); hk.Status != db.StatusProcessed {
-		t.Fatalf("status = %q, want processed", hk.Status)
+	page("POST", "/hooks/"+hooks[0].ID+"/handle", "back=%2F%3Fchannel%3Dnewsletter")
+	if _, body := page("GET", "/"+hooks[0].ID, ""); !strings.Contains(body, "by alice@example.com") || !strings.Contains(body, ">caught</span>") {
+		t.Fatalf("activity on the handled hook's page:\n%s", body)
+	}
+	if hk, _ := database.GetHook(t.Context(), hooks[0].ID); hk.Status != db.StatusHandled {
+		t.Fatalf("status = %q, want handled", hk.Status)
 	}
 	code, body = page("GET", "/?status=pending", "")
 	if code != 200 || strings.Contains(body, "bob@example.com") || !strings.Contains(body, "jane@example.com") {
 		t.Fatalf("pending filter: %d\n%s", code, body)
 	}
 	contactHooks, _ := database.ListHooks(t.Context(), db.HookFilter{Channel: "contact"}, 10)
-	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusFailed, "smtp <refused>")
+	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusFailed, "smtp", "<refused>")
 	code, body = page("GET", "/?status=failed", "")
-	if code != 200 || !strings.Contains(body, "smtp &lt;refused&gt;") {
+	if code != 200 || !strings.Contains(body, "smtp: &lt;refused&gt;") {
 		t.Fatalf("failed filter: %d\n%s", code, body)
 	}
-	if _, body := page("GET", "/"+contactHooks[0].ID, ""); !strings.Contains(body, "smtp &lt;refused&gt;") || !strings.Contains(body, ">Retry</button>") {
+	if _, body := page("GET", "/"+contactHooks[0].ID, ""); !strings.Contains(body, "smtp: &lt;refused&gt;") || !strings.Contains(body, ">Retry</button>") {
 		t.Fatalf("failed hook page:\n%s", body)
 	}
-	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusPending, "")
+	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusPending, "", "")
 
 	if _, body := page("GET", "/?status=discarded&channel=contact", ""); !strings.Contains(body, "No discarded hooks in") {
 		t.Fatalf("empty filtered page: %s", body)
 	}
-	code, body = page("GET", "/?status=processed", "")
+	code, body = page("GET", "/?status=handled", "")
 	if code != 200 || !strings.Contains(body, "bob@example.com") || strings.Contains(body, "jane@example.com") {
-		t.Fatalf("processed filter: %d\n%s", code, body)
+		t.Fatalf("handled filter: %d\n%s", code, body)
 	}
 
 	code, body = page("POST", "/channels/contact/pause", "")
