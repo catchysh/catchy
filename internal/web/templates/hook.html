@@ -78,10 +78,13 @@
                 {{range .History}}
                 <tr>
                   <td class="py-1 pr-3 whitespace-nowrap tabular-nums text-gray-500"><span class="hidden sm:inline">{{.Date}} </span>{{.Time}}</td>
-                  <td class="py-1 pr-3 whitespace-nowrap {{if .Error}}text-red-700{{else}}text-emerald-700{{end}}">{{if .Error}}&#10007;{{else}}&#10003;{{end}}{{if .Status}} {{.Status}}{{end}}</td>
+                  <td class="py-1 pr-3 whitespace-nowrap {{if .Error}}text-red-700{{else}}text-emerald-700{{end}}">{{if .Error}}&#10007;{{else}}&#10003;{{end}}{{if .Code}} {{.Code}}{{end}}</td>
                   <td class="py-1 pr-3 w-full break-words {{if .Error}}text-gray-700{{else}}text-gray-500{{end}}">{{if .Error}}{{.Error}}{{else}}succeeded{{end}}</td>
                   <td class="py-1 whitespace-nowrap text-right tabular-nums text-gray-400">{{.MS}} ms</td>
                 </tr>
+                {{with .Output}}
+                <tr><td colspan="4" class="pb-2"><pre class="text-xs bg-gray-50 border border-gray-100 rounded p-2 overflow-x-auto max-h-48 whitespace-pre-wrap break-words text-gray-700">{{.}}</pre></td></tr>
+                {{end}}
                 {{end}}
               </tbody>
             </table>

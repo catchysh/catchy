@@ -1,0 +1,72 @@
+{{/* handler-fields is the handler form's fields, shared by Create on the
+     Handlers page and a handler's own page (with .Editing). */}}
+{{define "handler-fields"}}
+    <div class="grid gap-3 sm:grid-cols-4">
+      <div>
+        <label for="dst-name" class="block text-xs font-medium text-gray-700 mb-1">Name</label>
+        <input id="dst-name" type="text" name="name" value="{{.Form.Name}}"{{if .Editing}} readonly{{end}} placeholder="team-email" required maxlength="64" pattern="[a-z0-9]+([_\-][a-z0-9]+)*" autocomplete="off" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 read-only:bg-gray-50 read-only:text-gray-500 read-only:focus:ring-0">
+      </div>
+      <div>
+        <label for="dst-type" class="block text-xs font-medium text-gray-700 mb-1">Type</label>
+        <select id="dst-type" name="type" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          {{range .Types}}<option value="{{.}}"{{if eq . $.Form.Type}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="sm:col-span-2" data-for="http">
+        <label for="dst-url" class="block text-xs font-medium text-gray-700 mb-1">URL</label>
+        <input id="dst-url" type="text" name="url" value="{{.Form.URL}}" required autocomplete="off" spellcheck="false" placeholder="https://example.com/hooks" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div data-for="http">
+        <label for="dst-method" class="block text-xs font-medium text-gray-700 mb-1">Method</label>
+        <select id="dst-method" name="method" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          <option>POST</option><option>PUT</option><option>PATCH</option>
+        </select>
+      </div>
+      <div data-for="http">
+        <label for="dst-content-type" class="block text-xs font-medium text-gray-700 mb-1">Content type <span class="font-normal text-gray-400">(with a body)</span></label>
+        <input id="dst-content-type" type="text" name="content_type" value="{{.Form.ContentType}}" placeholder="application/json" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div class="sm:col-span-2" data-for="http">
+        <label for="dst-sign-with" class="block text-xs font-medium text-gray-700 mb-1">Sign with <span class="font-normal text-gray-400">(optional; X-Catchy-Signature)</span></label>
+        <select id="dst-sign-with" name="sign_with" data-secret-select class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono data-[unset]:border-red-300 data-[unset]:text-red-700">
+          <option value="">No signing</option>
+          {{template "secretOptions" (secretOptions .Env .Form.SignWith)}}
+        </select>
+      </div>
+      <div class="sm:col-span-4" data-for="http">
+        <label for="dst-headers" class="block text-xs font-medium text-gray-700 mb-1">Headers <span class="font-normal text-gray-400">(optional; one "Name: value" per line)</span></label>
+        <textarea id="dst-headers" name="headers" rows="2" spellcheck="false" placeholder="Authorization: Bearer {{"{{.Secrets.API_KEY}}"}}" data-highlight>{{.Form.Headers}}</textarea>
+      </div>
+      <div class="sm:col-span-4" data-for="http">
+        <div class="mb-1 flex items-center justify-between gap-2">
+          <label for="dst-body" class="block text-xs font-medium text-gray-700">Body <span class="font-normal text-gray-400">(optional; empty forwards the hook as received)</span></label>
+          {{template "placeholders" .Env}}
+        </div>
+        <textarea id="dst-body" name="body" rows="7" spellcheck="false" data-highlight>{{.Form.Body}}</textarea>
+      </div>
+      <div class="sm:col-span-4" data-for="script" hidden>
+        <label for="dst-script" class="block text-xs font-medium text-gray-700 mb-1">Script <span class="font-normal text-gray-400">(JavaScript; uses <code>hook</code>, <code>vars.NAME</code>, <code>secrets.NAME</code>, <code>fetch</code>, and <code>console.log</code>; throw to fail)</span></label>
+        <textarea id="dst-script" name="script" rows="12" spellcheck="false" required data-highlight="js">{{.Form.Script}}</textarea>
+      </div>
+    </div>
+    <div class="mt-4 flex items-center justify-between gap-3">
+      <p class="text-xs text-red-700" data-secret-hint hidden></p><span></span>
+      <button type="submit" class="shrink-0 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">{{if .Editing}}Save{{else}}Create{{end}}</button>
+    </div>
+{{end}}
+
+{{/* handler-form-js defines field() and syncType(), which shows the fields
+     of the chosen type; hidden ones are disabled so they aren't required or
+     sent. */}}
+{{define "handler-form-js"}}
+  const field = (id) => document.getElementById('dst-' + id);
+  const syncType = () => {
+    const type = field('type').value;
+    document.querySelectorAll('#dst-form [data-for]').forEach((el) => {
+      const on = el.dataset.for === type;
+      el.hidden = !on;
+      el.querySelectorAll('input, select, textarea').forEach((i) => { i.disabled = !on; });
+    });
+  };
+  field('type').addEventListener('change', syncType);
+{{end}}

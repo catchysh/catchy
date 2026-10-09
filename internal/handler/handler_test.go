@@ -312,7 +312,7 @@ func TestWorker(t *testing.T) {
 	ok := catch()
 	run()
 	if st, tries := status(ok); st != db.StatusHandled || len(tries) != 1 || tries[0].Status != db.AttemptSucceeded ||
-		tries[0].HTTPStatus != 200 || tries[0].Number != 1 || tries[0].FinishedAt == nil {
+		tries[0].Code != 200 || tries[0].Number != 1 || tries[0].FinishedAt == nil {
 		t.Fatalf("after success: hook %s, tries %+v", st, tries)
 	}
 	if string(c.body) != `{"a":1}` {
@@ -325,7 +325,7 @@ func TestWorker(t *testing.T) {
 	bad := catch()
 	run()
 	if st, tries := status(bad); st != db.StatusPending || len(tries) != 2 || tries[0].Status != db.AttemptFailed ||
-		tries[0].HTTPStatus != 500 || !strings.Contains(tries[0].Error, "HTTP 500") || tries[1].Status != db.AttemptPending || tries[1].Number != 2 {
+		tries[0].Code != 500 || !strings.Contains(tries[0].Error, "HTTP 500") || tries[1].Status != db.AttemptPending || tries[1].Number != 2 {
 		t.Fatalf("after first failure: hook %s, tries %+v", st, tries)
 	}
 	run()
@@ -514,4 +514,84 @@ func mustSchedule(t *testing.T, database *db.DB, hook string) string {
 		t.Fatal(err)
 	}
 	return attempts[hook][len(attempts[hook])-1].ID
+}
+
+func TestScript(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		ok           bool
+	}{
+		{"empty", "  \n", false},
+		{"syntax error", "const x = ;", false},
+		{"await and return", "const r = await Promise.resolve(1); return r", true},
+		{"uses a secret that isn't set yet", "console.log(secrets.NOPE)", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Validate(Script, Options{Script: tc.script}, testEnv)
+			if (err == nil) != tc.ok {
+				t.Fatalf("Validate = %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+	if _, err := Validate(Script, Options{Script: "\n\nconst x = ;"}, testEnv); err == nil || !strings.Contains(err.Error(), "Line 3") {
+		t.Fatalf("syntax error = %v, want its line", err)
+	}
+	if got := SecretsUsed(Options{Script: "fetch(secrets.HOOK_URL, {headers: {a: secrets.TOKEN}})"}); strings.Join(got, ",") != "HOOK_URL,TOKEN" {
+		t.Fatalf("SecretsUsed = %v", got)
+	}
+
+	// Running: the script sees the hook, vars, and secrets, logs, and
+	// fetches.
+	var c capture
+	srv := c.server(t)
+	e := env.Env{Vars: map[string]string{"chat": "42"}, Secrets: map[string]string{"TOKEN": "tok", "URL": srv.URL}}
+	r := &Runner{Dashboard: "https://catchy.test", Env: e}
+	run := func(script string) (Result, error) {
+		o, err := Validate(Script, Options{Script: script}, e)
+		if err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		return r.Run(t.Context(), db.Handler{Type: Script, Options: o.JSON()}, testHook())
+	}
+	res, err := run(`console.log("hi", hook.channel, hook.payload.email, vars.chat, {a: 1});
+const resp = await fetch(secrets.URL + "/send", {method: "post", headers: {Authorization: "Bearer " + secrets.TOKEN}, body: {text: hook.text}});
+if (!resp.ok) throw new Error("HTTP " + resp.status);
+console.warn("sent", resp.status, Object.keys(secrets).length);`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Output != "hi contact jane@example.com 42 {\"a\":1}\nwarn: sent 200 0" {
+		t.Fatalf("output = %q", res.Output)
+	}
+	if c.method != "POST" || c.header.Get("Authorization") != "Bearer tok" || c.header.Get("Content-Type") != "application/json" ||
+		!strings.Contains(string(c.body), `"text":"email: jane@example.com`) {
+		t.Fatalf("fetched %s %v %s", c.method, c.header, c.body)
+	}
+
+	// Throwing fails it, with the message and what was logged before.
+	res, err = run(`console.log("before"); throw new Error("nope")`)
+	if err == nil || err.Error() != "Error: nope" || res.Output != "before" {
+		t.Fatalf("throw = %v, %q", err, res.Output)
+	}
+	// A response that isn't ok is the script's call.
+	c.status = http.StatusBadGateway
+	if _, err := run(`const r = await fetch(secrets.URL); if (!r.ok) throw new Error("got " + r.status)`); err == nil || !strings.Contains(err.Error(), "got 502") {
+		t.Fatalf("not ok = %v", err)
+	}
+	c.status = 0
+	// A secret that isn't set fails before the script runs.
+	if _, err := run(`console.log(secrets.NOPE)`); err == nil || !strings.Contains(err.Error(), "CATCHY_SECRET_NOPE") {
+		t.Fatalf("missing secret = %v", err)
+	}
+	// Fetch errors name the host only.
+	if _, err := run(`await fetch("http://127.0.0.1:1/private-token")`); err == nil || strings.Contains(err.Error(), "private-token") {
+		t.Fatalf("fetch error = %v", err)
+	}
+	// Scripts that run too long are stopped.
+	old := ScriptTimeout
+	ScriptTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { ScriptTimeout = old })
+	if _, err := run(`while (true) {}`); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("endless script = %v", err)
+	}
 }

@@ -103,7 +103,9 @@ CREATE TABLE IF NOT EXISTS channels_handlers (
 CREATE INDEX IF NOT EXISTS idx_channels_handlers_handler ON channels_handlers(handler);
 
 -- An attempt is one try at running a handler on a hook; a handler's state
--- for a hook is its latest attempt. Pending attempts run when due_at comes.
+-- for a hook is its latest attempt. code is the response code (an HTTP
+-- status for http handlers; 0 when there was none), and output is what a
+-- script handler logged. Pending attempts run when due_at comes.
 -- A failed attempt schedules the next as a new row, with number counting
 -- up, until retries run out.
 CREATE TABLE IF NOT EXISTS attempts (
@@ -113,8 +115,9 @@ CREATE TABLE IF NOT EXISTS attempts (
     number INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'pending',
     due_at TIMESTAMP NOT NULL,
-    http_status INTEGER NOT NULL DEFAULT 0,
+    code INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT '',
+    output TEXT NOT NULL DEFAULT '',
     ms INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL,
     finished_at TIMESTAMP

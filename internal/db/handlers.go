@@ -39,18 +39,20 @@ type Attempt struct {
 	Number     int    // 1 for the first try, counting up through retries
 	Status     string // one of the Attempt* constants
 	DueAt      time.Time
-	HTTPStatus int    // the response's status, when there was one
+	Code       int    // the response code: an HTTP status for http handlers; 0 when there was none
 	Error      string // why it failed
-	MS         int64  // how long the request took
+	Output     string // what a script logged
+	MS         int64  // how long it took
 	CreatedAt  time.Time
 	FinishedAt *time.Time // when it was tried; nil while pending
 }
 
 // Outcome is how a try went.
 type Outcome struct {
-	HTTPStatus int
-	Error      string // empty when it succeeded
-	MS         int64
+	Code   int
+	Error  string // empty when it succeeded
+	Output string // what a script logged
+	MS     int64
 }
 
 const handlerColumns = `name, type, options, created_at`
@@ -136,6 +138,42 @@ func (d *DB) ListHandlers(ctx context.Context) ([]Handler, error) {
 	return dsts, nil
 }
 
+// UpdateHandler replaces a handler's type and options. Attempts already
+// queued use the new settings when they run.
+func (d *DB) UpdateHandler(ctx context.Context, dst Handler) (*Handler, error) {
+	if dst.Options == "" {
+		dst.Options = "{}"
+	}
+	result, err := d.sql.ExecContext(ctx, d.q(`UPDATE handlers SET type = ?, options = ? WHERE name = ?`), dst.Type, dst.Options, dst.Name)
+	if err != nil {
+		return nil, fmt.Errorf("updating handler: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("handler not found: %s", dst.Name)
+	}
+	return d.GetHandler(ctx, dst.Name)
+}
+
+// LastAttempts returns each handler's latest finished attempt, by handler
+// name; handlers that never ran have none.
+func (d *DB) LastAttempts(ctx context.Context) (map[string]Attempt, error) {
+	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT `+attemptColumns+` FROM attempts a WHERE a.finished_at IS NOT NULL
+		AND a.id = (SELECT MAX(id) FROM attempts l WHERE l.handler = a.handler AND l.finished_at IS NOT NULL)`))
+	if err != nil {
+		return nil, fmt.Errorf("listing last attempts: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]Attempt{}
+	for rows.Next() {
+		a, err := scanAttempt(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning attempt: %w", err)
+		}
+		out[a.Handler] = *a
+	}
+	return out, rows.Err()
+}
+
 // DeleteHandler deletes a handler. It refuses with
 // ErrHandlerInUse while the handler is attached to any channel.
 func (d *DB) DeleteHandler(ctx context.Context, name string) error {
@@ -213,13 +251,13 @@ func (d *DB) SetChannelHandlers(ctx context.Context, channel string, handlers []
 
 // Attempts
 
-const attemptColumns = `id, hook_id, handler, number, status, due_at, http_status, error, ms, created_at, finished_at`
+const attemptColumns = `id, hook_id, handler, number, status, due_at, code, error, output, ms, created_at, finished_at`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	var dl Attempt
 	var finished sql.NullTime
 	if err := row.Scan(&dl.ID, &dl.HookID, &dl.Handler, &dl.Number, &dl.Status, &dl.DueAt,
-		&dl.HTTPStatus, &dl.Error, &dl.MS, &dl.CreatedAt, &finished); err != nil {
+		&dl.Code, &dl.Error, &dl.Output, &dl.MS, &dl.CreatedAt, &finished); err != nil {
 		return nil, err
 	}
 	if finished.Valid {
@@ -356,8 +394,8 @@ func (d *DB) FinishAttempt(ctx context.Context, id string, o Outcome, retryIn ti
 	if o.Error != "" {
 		status = AttemptFailed
 	}
-	query := d.q(`UPDATE attempts SET status = ?, http_status = ?, error = ?, ms = ?, finished_at = ? WHERE id = ?`)
-	if _, err := d.sql.ExecContext(ctx, query, status, o.HTTPStatus, o.Error, o.MS, now, id); err != nil {
+	query := d.q(`UPDATE attempts SET status = ?, code = ?, error = ?, output = ?, ms = ?, finished_at = ? WHERE id = ?`)
+	if _, err := d.sql.ExecContext(ctx, query, status, o.Code, o.Error, o.Output, o.MS, now, id); err != nil {
 		return fmt.Errorf("updating attempt: %w", err)
 	}
 

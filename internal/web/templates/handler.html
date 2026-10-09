@@ -1,0 +1,53 @@
+{{define "content"}}
+<a href="/handlers" class="text-sm text-gray-500 hover:text-gray-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">&larr; Handlers</a>
+<div class="mt-2 mb-6 flex flex-wrap items-center gap-3">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight">{{.Form.Name}}</h2>
+  <span class="rounded bg-gray-100 border border-gray-200 px-1.5 py-0.5 font-mono text-xs text-gray-600">{{.Type}}</span>
+</div>
+
+<div class="grid gap-6 grid-cols-1 lg:grid-cols-3">
+  <section class="lg:col-span-2 min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm p-6" aria-labelledby="settings-heading">
+    <h3 id="settings-heading" class="text-sm font-semibold text-gray-900">Settings</h3>
+    <p class="mt-0.5 mb-4 text-xs text-gray-500">Changes apply to the next attempt, including retries already queued.</p>
+    {{with .Error}}<p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{.}}</p>{{end}}
+    {{with .Saved}}<p class="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800" role="status">Saved.</p>{{end}}
+    <form method="POST" action="/handlers/{{.Form.Name}}" id="dst-form">
+      {{template "handler-fields" .}}
+    </form>
+  </section>
+
+  <div class="min-w-0 space-y-6">
+    <section class="bg-white rounded-xl border border-gray-200 shadow-sm p-5" aria-labelledby="channels-heading">
+      <h3 id="channels-heading" class="text-sm font-semibold text-gray-900 mb-1">Channels</h3>
+      <p class="text-xs text-gray-500 mb-3">It runs on every hook these channels catch. Attach it on a channel's page.</p>
+      {{range .Channels}}<a href="/channels/{{.}}" class="mr-1 mb-1 inline-block rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-xs hover:bg-gray-200">#{{.}}</a>{{else}}<p class="text-sm text-gray-400">Not attached to any channel.</p>{{end}}
+    </section>
+
+    <section class="bg-white rounded-xl border border-gray-200 shadow-sm p-5" aria-labelledby="last-heading">
+      <h3 id="last-heading" class="text-sm font-semibold text-gray-900 mb-1">Last attempt</h3>
+      {{with .Last}}
+      <p class="text-sm {{if eq .Status "succeeded"}}text-emerald-700{{else}}text-red-700{{end}}">{{if eq .Status "succeeded"}}&#10003; succeeded{{else}}&#10007; failed{{end}} <span class="text-gray-500">&middot; {{.At}}</span></p>
+      {{with .Error}}<p class="mt-1 text-xs text-gray-600 break-words">{{.}}</p>{{end}}
+      <a href="/{{.HookID}}" class="mt-2 inline-block text-xs text-brand-700 hover:underline">Open its hook</a>
+      {{else}}
+      <p class="text-sm text-gray-400">It hasn't run yet.</p>
+      {{end}}
+    </section>
+
+    <section class="rounded-xl border border-red-200 bg-white p-5" aria-labelledby="danger-heading">
+      <h3 id="danger-heading" class="text-sm font-semibold text-red-700 mb-1">Danger zone</h3>
+      <p class="text-xs text-gray-500 mb-4">{{if .Channels}}Detach it from its channels before deleting it.{{else}}Deletes the handler. Its past attempts stay on their hooks.{{end}}</p>
+      <form method="POST" action="/handlers/{{.Form.Name}}/delete" onsubmit="return confirm('Delete handler {{.Form.Name}}?')">
+        <button type="submit" {{if .Channels}}disabled{{end}}
+          class="w-full text-sm font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 hover:bg-red-50 rounded-md px-4 py-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white">Delete handler</button>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+  {{template "handler-form-js"}}
+  if ({{.Form.Method}}) field('method').value = {{.Form.Method}};
+  syncType();
+</script>
+{{end}}

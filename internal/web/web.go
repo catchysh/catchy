@@ -70,12 +70,16 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, hostname, versio
 		},
 	}
 	h.login = template.Must(template.New("login.html").Funcs(funcs).ParseFS(templateFS, "templates/login.html"))
-	for _, p := range []string{"hooks", "hook", "channels", "channel", "guards", "handlers", "apikeys"} {
-		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
-			templateFS,
-			"templates/layout.html",
-			"templates/"+p+".html",
-		))
+	// Partials some pages share.
+	partials := map[string][]string{
+		"handlers": {"templates/handler_form.html"},
+		"handler":  {"templates/handler_form.html"},
+		"guards":   {"templates/guard_form.html"},
+		"guard":    {"templates/guard_form.html"},
+	}
+	for _, p := range []string{"hooks", "hook", "channels", "channel", "guards", "guard", "handlers", "handler", "apikeys"} {
+		files := append([]string{"templates/layout.html", "templates/" + p + ".html"}, partials[p]...)
+		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(templateFS, files...))
 	}
 	return h
 }
@@ -113,6 +117,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /keys", h.KeysPage)
 	mux.HandleFunc("GET /guards", h.GuardsPage)
 	mux.HandleFunc("POST /guards", h.createGuard)
+	mux.HandleFunc("GET /guards/{name}", h.GuardPage)
+	mux.HandleFunc("POST /guards/{name}", h.updateGuard)
 	mux.HandleFunc("POST /guards/{name}/delete", h.deleteGuard)
 	mux.HandleFunc("GET /channels", h.ChannelsPage)
 	mux.HandleFunc("GET /channels/{name}", h.ChannelPage)
@@ -121,6 +127,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /channels/{name}/handlers", h.setChannelHandlers)
 	mux.HandleFunc("GET /handlers", h.HandlersPage)
 	mux.HandleFunc("POST /handlers", h.createHandler)
+	mux.HandleFunc("GET /handlers/{name}", h.HandlerPage)
+	mux.HandleFunc("POST /handlers/{name}", h.updateHandler)
 	mux.HandleFunc("POST /handlers/{name}/delete", h.deleteHandler)
 	mux.HandleFunc("POST /channels/{name}/pause", h.pauseChannel)
 	mux.HandleFunc("POST /channels/{name}/resume", h.resumeChannel)
@@ -204,8 +212,9 @@ type hookHandlerRow struct {
 type attemptRow struct {
 	Date   string // when it was tried, split so phones can show just the time
 	Time   string
-	Status int // the HTTP status; 0 when there was no response
+	Code   int // the response code; 0 when there was none
 	Error  string
+	Output string // what a script logged
 	MS     int64
 }
 
@@ -216,7 +225,6 @@ type hookRow struct {
 	Status         string
 	HandlerSummary *handlerSummary // nil without handlers
 	Events         []eventRow      // newest first
-	LastFailure    *eventRow       // the latest failure, while the hook is failed
 	Method         string
 	ContentType    string
 	Payload        []field // decoded body; nil when the body isn't JSON or a form
@@ -435,7 +443,7 @@ func hookHandlerRows(dls []db.Attempt) []hookHandlerRow {
 		if dl.FinishedAt != nil {
 			at = *dl.FinishedAt
 		}
-		row.History = append(row.History, attemptRow{Date: at.Local().Format(time.DateOnly), Time: at.Local().Format(time.TimeOnly), Status: dl.HTTPStatus, Error: dl.Error, MS: dl.MS})
+		row.History = append(row.History, attemptRow{Date: at.Local().Format(time.DateOnly), Time: at.Local().Format(time.TimeOnly), Code: dl.Code, Error: dl.Error, Output: dl.Output, MS: dl.MS})
 	}
 	return rows
 }
@@ -650,20 +658,11 @@ func (h *Handler) ChannelPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // setEvents adds a hook's events, oldest first, as its activity, newest
-// first, and notes its latest failure while it's failed.
+// first.
 func (row *hookRow) setEvents(events []db.Event) {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
 		row.Events = append(row.Events, eventRow{At: e.CreatedAt.Local().Format(time.DateTime), Kind: e.Kind, Actor: e.Actor, Message: e.Message})
-	}
-	if row.Status != db.StatusFailed {
-		return
-	}
-	for i := range row.Events {
-		if row.Events[i].Kind == db.EventFailed {
-			row.LastFailure = &row.Events[i]
-			return
-		}
 	}
 }
 
@@ -921,6 +920,16 @@ type guardsData struct {
 	Error      string    // a failed action; for Create guard, shown in its form
 	Form       guardForm // Create guard input to restore after a failed create
 	Env        env.Env
+	Editing    bool // the form edits Form.Name; false for Create
+}
+
+// guardData is a guard's own page: its settings to edit, its channels, and
+// Delete. It embeds guardsData for the form's choices.
+type guardData struct {
+	guardsData
+	Kind     string
+	Channels []string
+	Saved    bool
 }
 
 // guardForm is the Create guard form's input, kept when creating fails so the
@@ -983,20 +992,40 @@ func (h *Handler) renderGuards(w http.ResponseWriter, r *http.Request, user *db.
 	h.render(w, "guards", data)
 }
 
-// guardsError sends the browser back to the guards page with a message.
-func guardsError(w http.ResponseWriter, r *http.Request, msg string) {
-	http.Redirect(w, r, "/guards?error="+url.QueryEscape(msg), http.StatusSeeOther)
-}
-
 func (h *Handler) createGuard(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
 		return
 	}
-	form := guardForm{
+	form := readGuardForm(r)
+	form.Name = strings.ToLower(strings.TrimSpace(r.FormValue("name")))
+	// Failures refill the form with what was entered.
+	fail := func(msg string) { h.renderGuards(w, r, user, msg, form) }
+	if !db.ValidChannel(form.Name) {
+		fail("Guard names are up to 64 lowercase letters and digits, separated by single _ or -.")
+		return
+	}
+	g, msg := validateGuardForm(form)
+	if msg != "" {
+		fail(msg)
+		return
+	}
+	if _, err := h.db.CreateGuard(r.Context(), g); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			fail("A guard named " + form.Name + " already exists.")
+			return
+		}
+		h.dbError(w, r, "creating guard", err)
+		return
+	}
+	http.Redirect(w, r, "/guards", http.StatusSeeOther)
+}
+
+// readGuardForm reads the guard form's fields, except the name.
+func readGuardForm(r *http.Request) guardForm {
+	return guardForm{
 		Restore:   true,
 		Preset:    r.FormValue("preset"),
-		Name:      strings.ToLower(strings.TrimSpace(r.FormValue("name"))),
 		Secret:    strings.TrimSpace(r.FormValue("secret")),
 		Type:      r.FormValue("type"),
 		Scheme:    r.FormValue("scheme"),
@@ -1007,27 +1036,23 @@ func (h *Handler) createGuard(w http.ResponseWriter, r *http.Request) {
 		Prefix:    r.FormValue("prefix"),
 		MinScore:  strings.TrimSpace(r.FormValue("min_score")),
 	}
-	// Failures refill the form with what was entered.
-	fail := func(msg string) { h.renderGuards(w, r, user, msg, form) }
+}
 
+// validateGuardForm checks the form and returns the guard it describes, or a
+// message saying what's wrong.
+func validateGuardForm(form guardForm) (db.Guard, string) {
 	typ, scheme, secret := form.Type, form.Scheme, form.Secret
 	if secret != "" && !env.ValidName(secret) {
-		fail("Secret names are letters, digits, and _.")
-		return
+		return db.Guard{}, "Secret names are letters, digits, and _."
 	}
 	if typ != guard.Signature && typ != guard.Captcha {
 		scheme = ""
-	}
-	if !db.ValidChannel(form.Name) {
-		fail("Guard names are up to 64 lowercase letters and digits, separated by single _ or -.")
-		return
 	}
 	var minScore float64
 	if form.MinScore != "" {
 		f, err := strconv.ParseFloat(form.MinScore, 64)
 		if err != nil {
-			fail("The minimum score must be a number between 0 and 1.")
-			return
+			return db.Guard{}, "The minimum score must be a number between 0 and 1."
 		}
 		minScore = f
 	}
@@ -1041,19 +1066,77 @@ func (h *Handler) createGuard(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		msg := err.Error()
-		fail(strings.ToUpper(msg[:1]) + msg[1:] + ".")
+		return db.Guard{}, strings.ToUpper(msg[:1]) + msg[1:] + "."
+	}
+	return db.Guard{Name: form.Name, Type: typ, Scheme: scheme, Options: opts.JSON(), Secret: secret}, ""
+}
+
+func (h *Handler) GuardPage(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
 		return
 	}
-	g := db.Guard{Name: form.Name, Type: typ, Scheme: scheme, Options: opts.JSON(), Secret: secret}
-	if _, err := h.db.CreateGuard(r.Context(), g); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			fail("A guard named " + form.Name + " already exists.")
-			return
+	h.renderGuard(w, r, user, nil, r.URL.Query().Get("error"))
+}
+
+// renderGuard shows a guard's page; a non-nil form is input to keep after a
+// failed save.
+func (h *Handler) renderGuard(w http.ResponseWriter, r *http.Request, user *db.User, form *guardForm, errMsg string) {
+	g, err := h.db.GetGuard(r.Context(), r.PathValue("name"))
+	if err != nil {
+		h.dbError(w, r, "getting guard", err)
+		return
+	}
+	data := guardData{
+		guardsData: guardsData{
+			layoutData: layoutData{ActiveTab: "guards", Title: g.Name, User: user},
+			Env:        h.env,
+			Types:      guard.Types,
+			Schemes:    map[string][]string{guard.Captcha: guard.CaptchaSchemes, guard.Signature: guard.Schemes},
+			Algorithms: guard.Algorithms,
+			Encodings:  guard.Encodings,
+			Error:      errMsg,
+			Editing:    true,
+		},
+		Kind:     guardKind(*g),
+		Channels: g.Channels,
+		Saved:    r.URL.Query().Has("saved"),
+	}
+	if form != nil {
+		data.Form = *form
+	} else {
+		opts, _ := guard.ParseOptions(g.Options)
+		data.Form = guardForm{Type: g.Type, Scheme: g.Scheme, Secret: g.Secret, Field: opts.Field, Header: opts.Header,
+			Algorithm: opts.Algorithm, Encoding: opts.Encoding, Prefix: opts.Prefix}
+		if opts.MinScore != 0 {
+			data.Form.MinScore = strconv.FormatFloat(opts.MinScore, 'f', -1, 64)
 		}
-		h.dbError(w, r, "creating guard", err)
+	}
+	data.Form.Name = g.Name
+	if form != nil {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}
+	h.render(w, "guard", data)
+}
+
+func (h *Handler) updateGuard(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
 		return
 	}
-	http.Redirect(w, r, "/guards", http.StatusSeeOther)
+	name := r.PathValue("name")
+	form := readGuardForm(r)
+	form.Name = name
+	g, msg := validateGuardForm(form)
+	if msg != "" {
+		h.renderGuard(w, r, user, &form, msg)
+		return
+	}
+	if _, err := h.db.UpdateGuard(r.Context(), g); err != nil {
+		h.dbError(w, r, "updating guard", err)
+		return
+	}
+	http.Redirect(w, r, "/guards/"+url.PathEscape(name)+"?saved", http.StatusSeeOther)
 }
 
 func (h *Handler) deleteGuard(w http.ResponseWriter, r *http.Request) {
@@ -1063,7 +1146,7 @@ func (h *Handler) deleteGuard(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.DeleteGuard(r.Context(), r.PathValue("name")); err != nil {
 		if errors.Is(err, db.ErrGuardInUse) {
-			guardsError(w, r, "Detach "+r.PathValue("name")+" from its channels before deleting it.")
+			http.Redirect(w, r, "/guards/"+url.PathEscape(r.PathValue("name"))+"?error="+url.QueryEscape("Detach it from its channels before deleting it."), http.StatusSeeOther)
 			return
 		}
 		h.dbError(w, r, "deleting guard", err)
@@ -1076,10 +1159,28 @@ func (h *Handler) deleteGuard(w http.ResponseWriter, r *http.Request) {
 
 type handlerRow struct {
 	Name     string
-	Kind     string
+	Type     string
+	Target   string   // what it does, e.g. "POST api.resend.com" or "3 lines"
 	Secrets  []string // names of the secrets it uses
 	Missing  []string // those not set in the environment
 	Channels []string
+	Last     *lastAttempt // its latest finished attempt; nil if it never ran
+}
+
+type lastAttempt struct {
+	Status string
+	Error  string
+	At     string
+	Ago    string
+	HookID string
+}
+
+func newLastAttempt(a db.Attempt) *lastAttempt {
+	at := a.CreatedAt
+	if a.FinishedAt != nil {
+		at = *a.FinishedAt
+	}
+	return &lastAttempt{Status: a.Status, Error: a.Error, At: at.Local().Format(time.DateTime), Ago: ago(at, time.Now()), HookID: a.HookID}
 }
 
 type handlersData struct {
@@ -1090,6 +1191,7 @@ type handlersData struct {
 	Error    string
 	Form     handlerForm
 	Env      env.Env
+	Editing  bool // the form edits Form.Name; false for Create
 }
 
 // handlerForm is the Create handler form's input, kept when creating
@@ -1105,6 +1207,7 @@ type handlerForm struct {
 	ContentType string
 	SignWith    string
 	Body        string
+	Script      string
 }
 
 func (h *Handler) HandlersPage(w http.ResponseWriter, r *http.Request) {
@@ -1130,13 +1233,23 @@ func (h *Handler) renderHandlers(w http.ResponseWriter, r *http.Request, user *d
 		Error:      errMsg,
 		Form:       form,
 	}
+	last, err := h.db.LastAttempts(r.Context())
+	if err != nil {
+		log.Printf("listing last attempts: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	for _, dst := range dsts {
 		opts, _ := handler.ParseOptions(dst.Options)
 		row := handlerRow{
 			Name:     dst.Name,
-			Kind:     handler.Describe(dst.Type, opts),
+			Type:     dst.Type,
+			Target:   handler.Target(dst.Type, opts),
 			Secrets:  handler.SecretsUsed(opts),
 			Channels: dst.Channels,
+		}
+		if a, ok := last[dst.Name]; ok {
+			row.Last = newLastAttempt(a)
 		}
 		for _, name := range row.Secrets {
 			if _, ok := h.env.Secrets[name]; !ok {
@@ -1156,34 +1269,16 @@ func (h *Handler) createHandler(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		return
 	}
-	form := handlerForm{
-		Restore:     true,
-		Preset:      r.FormValue("preset"),
-		Name:        strings.ToLower(strings.TrimSpace(r.FormValue("name"))),
-		Type:        r.FormValue("type"),
-		Method:      r.FormValue("method"),
-		URL:         strings.TrimSpace(r.FormValue("url")),
-		Headers:     r.FormValue("headers"),
-		ContentType: strings.TrimSpace(r.FormValue("content_type")),
-		SignWith:    strings.TrimSpace(r.FormValue("sign_with")),
-		Body:        r.FormValue("body"),
-	}
+	form := readHandlerForm(r)
+	form.Name = strings.ToLower(strings.TrimSpace(r.FormValue("name")))
 	fail := func(msg string) { h.renderHandlers(w, r, user, msg, form) }
 	if !db.ValidChannel(form.Name) {
 		fail("Handler names are up to 64 lowercase letters and digits, separated by single _ or -.")
 		return
 	}
-	signWith := form.SignWith
-	if signWith != "" && !env.ValidName(signWith) {
-		fail("Secret names are letters, digits, and _.")
-		return
-	}
-	opts, err := handler.Validate(form.Type, handler.Options{
-		Method: form.Method, URL: form.URL, Headers: form.Headers, ContentType: form.ContentType, SignWith: signWith, Body: form.Body,
-	}, h.env)
-	if err != nil {
-		msg := err.Error()
-		fail(strings.ToUpper(msg[:1]) + msg[1:] + ".")
+	opts, msg := h.validateHandlerForm(form)
+	if msg != "" {
+		fail(msg)
 		return
 	}
 	dst := db.Handler{Name: form.Name, Type: form.Type, Options: opts.JSON()}
@@ -1198,6 +1293,120 @@ func (h *Handler) createHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/handlers", http.StatusSeeOther)
 }
 
+// readHandlerForm reads the handler form's fields, except the name.
+func readHandlerForm(r *http.Request) handlerForm {
+	return handlerForm{
+		Restore:     true,
+		Preset:      r.FormValue("preset"),
+		Type:        r.FormValue("type"),
+		Method:      r.FormValue("method"),
+		URL:         strings.TrimSpace(r.FormValue("url")),
+		Headers:     r.FormValue("headers"),
+		ContentType: strings.TrimSpace(r.FormValue("content_type")),
+		SignWith:    strings.TrimSpace(r.FormValue("sign_with")),
+		Body:        r.FormValue("body"),
+		Script:      r.FormValue("script"),
+	}
+}
+
+// validateHandlerForm checks the form's settings and returns them, or a
+// message saying what's wrong.
+func (h *Handler) validateHandlerForm(form handlerForm) (handler.Options, string) {
+	if form.SignWith != "" && !env.ValidName(form.SignWith) {
+		return handler.Options{}, "Secret names are letters, digits, and _."
+	}
+	opts, err := handler.Validate(form.Type, handler.Options{
+		Method: form.Method, URL: form.URL, Headers: form.Headers, ContentType: form.ContentType, SignWith: form.SignWith, Body: form.Body, Script: form.Script,
+	}, h.env)
+	if err != nil {
+		msg := err.Error()
+		return handler.Options{}, strings.ToUpper(msg[:1]) + msg[1:] + "."
+	}
+	return opts, ""
+}
+
+// handlerData is a handler's own page: its settings to edit, its channels,
+// its last attempt, and Delete.
+type handlerData struct {
+	layoutData
+	Form     handlerForm
+	Type     string // as saved
+	Types    []string
+	Env      env.Env
+	Editing  bool
+	Channels []string
+	Last     *lastAttempt
+	Error    string
+	Saved    bool
+}
+
+func (h *Handler) HandlerPage(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
+		return
+	}
+	h.renderHandler(w, r, user, nil, r.URL.Query().Get("error"))
+}
+
+// renderHandler shows a handler's page; a non-nil form is input to keep
+// after a failed save.
+func (h *Handler) renderHandler(w http.ResponseWriter, r *http.Request, user *db.User, form *handlerForm, errMsg string) {
+	dst, err := h.db.GetHandler(r.Context(), r.PathValue("name"))
+	if err != nil {
+		h.dbError(w, r, "getting handler", err)
+		return
+	}
+	data := handlerData{
+		layoutData: layoutData{ActiveTab: "handlers", Title: dst.Name, User: user},
+		Type:       dst.Type,
+		Types:      handler.Types,
+		Env:        h.env,
+		Editing:    true,
+		Channels:   dst.Channels,
+		Error:      errMsg,
+		Saved:      r.URL.Query().Has("saved"),
+	}
+	if form != nil {
+		data.Form = *form
+	} else {
+		opts, _ := handler.ParseOptions(dst.Options)
+		data.Form = handlerForm{Type: dst.Type, Method: opts.Method, URL: opts.URL, Headers: opts.Headers, ContentType: opts.ContentType,
+			SignWith: opts.SignWith, Body: opts.Body, Script: opts.Script}
+	}
+	data.Form.Name = dst.Name
+	last, err := h.db.LastAttempts(r.Context())
+	if err != nil {
+		h.dbError(w, r, "listing last attempts", err)
+		return
+	}
+	if a, ok := last[dst.Name]; ok {
+		data.Last = newLastAttempt(a)
+	}
+	if form != nil {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}
+	h.render(w, "handler", data)
+}
+
+func (h *Handler) updateHandler(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
+		return
+	}
+	name := r.PathValue("name")
+	form := readHandlerForm(r)
+	opts, msg := h.validateHandlerForm(form)
+	if msg != "" {
+		h.renderHandler(w, r, user, &form, msg)
+		return
+	}
+	if _, err := h.db.UpdateHandler(r.Context(), db.Handler{Name: name, Type: form.Type, Options: opts.JSON()}); err != nil {
+		h.dbError(w, r, "updating handler", err)
+		return
+	}
+	http.Redirect(w, r, "/handlers/"+url.PathEscape(name)+"?saved", http.StatusSeeOther)
+}
+
 func (h *Handler) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
@@ -1205,7 +1414,7 @@ func (h *Handler) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.DeleteHandler(r.Context(), r.PathValue("name")); err != nil {
 		if errors.Is(err, db.ErrHandlerInUse) {
-			http.Redirect(w, r, "/handlers?error="+url.QueryEscape("Detach "+r.PathValue("name")+" from its channels before deleting it."), http.StatusSeeOther)
+			http.Redirect(w, r, "/handlers/"+url.PathEscape(r.PathValue("name"))+"?error="+url.QueryEscape("Detach it from its channels before deleting it."), http.StatusSeeOther)
 			return
 		}
 		h.dbError(w, r, "deleting handler", err)

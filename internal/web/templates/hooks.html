@@ -45,7 +45,6 @@
           <td class="px-4 py-2.5 max-w-0 w-full">
             {{/* The link covers the whole row (after:inset-0), so any cell opens the hook. */}}
             <a href="{{.URL}}" class="block truncate focus:outline-none after:absolute after:inset-0 {{if .Summary}}text-gray-900{{else}}text-gray-400{{end}}">{{if .Summary}}{{.Summary}}{{else}}{{.BodyNote}}{{end}}</a>
-            {{if and (eq .Status "failed") .LastFailure}}<p class="truncate text-xs text-red-700" title="{{.LastFailure.Actor}}: {{.LastFailure.Message}}">{{.LastFailure.Actor}}: {{.LastFailure.Message}}</p>{{end}}
           </td>
           <td class="px-4 py-2.5 hidden sm:table-cell whitespace-nowrap text-xs">
             {{/* How many handlers succeeded, with the overall state; hovering lists each. */}}

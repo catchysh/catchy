@@ -367,3 +367,42 @@ func TestChannelGuards(t *testing.T) {
 		t.Fatalf("honeypot still on %v", g.Channels)
 	}
 }
+
+func TestUpdateHandlerAndLastAttempts(t *testing.T) {
+	database := newTestDB(t)
+	if _, err := database.CreateHandler(t.Context(), Handler{Name: "fwd", Type: "http", Options: `{"url":"https://a.example"}`}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := database.UpdateHandler(t.Context(), Handler{Name: "fwd", Type: "script", Options: `{"script":"1"}`})
+	if err != nil || h.Type != "script" || h.Options != `{"script":"1"}` {
+		t.Fatalf("UpdateHandler = %+v, %v", h, err)
+	}
+	if _, err := database.UpdateHandler(t.Context(), Handler{Name: "missing", Type: "http"}); err == nil {
+		t.Fatal("updating a missing handler succeeded")
+	}
+
+	database.SetChannelHandlers(t.Context(), "contact", []string{"fwd"})
+	hook := createHook(t, database, "contact")
+	database.EnqueueAttempts(t.Context(), hook.ID, "contact")
+	if last, _ := database.LastAttempts(t.Context()); len(last) != 0 {
+		t.Fatalf("last attempts before any ran = %+v", last)
+	}
+	due, _ := database.ClaimDueAttempts(t.Context(), 10, time.Minute)
+	database.FinishAttempt(t.Context(), due[0].ID, Outcome{Error: "boom"}, time.Hour)
+	last, err := database.LastAttempts(t.Context())
+	if err != nil || last["fwd"].Error != "boom" || last["fwd"].Status != AttemptFailed {
+		t.Fatalf("LastAttempts = %+v, %v", last, err)
+	}
+}
+
+func TestUpdateGuard(t *testing.T) {
+	database := newTestDB(t)
+	database.CreateGuard(t.Context(), Guard{Name: "ci", Type: "token", Options: `{"header":"X-Token"}`, Secret: "OLD"})
+	g, err := database.UpdateGuard(t.Context(), Guard{Name: "ci", Type: "signature", Scheme: "stripe", Options: "{}", Secret: "STRIPE"})
+	if err != nil || g.Type != "signature" || g.Scheme != "stripe" || g.Secret != "STRIPE" {
+		t.Fatalf("UpdateGuard = %+v, %v", g, err)
+	}
+	if _, err := database.UpdateGuard(t.Context(), Guard{Name: "missing", Type: "honeypot"}); err == nil {
+		t.Fatal("updating a missing guard succeeded")
+	}
+}

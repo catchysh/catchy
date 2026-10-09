@@ -13,7 +13,7 @@ by the handlers you attach — or kept as an inbox you go through yourself.
 - **Channels** — group hooks with `?channel=stripe`; channels appear on first use
 - **Raw capture** — method, query, headers, and the exact body (e.g. for signature checks), plus a decoded payload for JSON and forms
 - **Guards** — honeypot, captchas (Cloudflare Turnstile, Google reCAPTCHA), webhook signatures (GitHub, Shopify, Stripe, HMAC), and tokens, attached per channel
-- **Handlers** — run on every hook: HTTP requests for email through Resend, Slack, Discord, or any URL, with retries and every attempt recorded
+- **Handlers** — run on every hook: HTTP requests for email through Resend, Slack, Discord, or any URL, or JavaScript, with retries and every attempt recorded
 - **Forms too** — open CORS; your page shows its own thank-you
 - **API** — REST, gRPC, gRPC-Web, and Connect on one endpoint
 
@@ -193,8 +193,8 @@ sent along and checked by Catchy:
 dashboard's **Handlers** page, then check them on a channel's page. Every hook
 caught there is queued for each handler and run in the background.
 
-A handler has a **type**; today that's `http`: a request to a URL with a
-method, optional headers, and an optional body template. An empty body
+A handler has a **type**: `http` or `script` ([below](#script-handlers)). An
+`http` handler sends a request to a URL with a method, optional headers, and an optional body template. An empty body
 forwards the hook as received. The URL, headers, and body are templates that
 can use [secrets](#secrets) by name: `Authorization: Bearer
 {{.Secrets.RESEND_API_KEY}}`, or a whole URL like
@@ -241,6 +241,34 @@ Anything in the payload comes from whoever sends the hook, so `from`, `to`,
 recipient from the hook would send email anywhere for anyone. Saving one is
 refused; use fixed addresses or variables. `reply_to` and `subject` can use
 the payload.
+
+### Script handlers
+
+A `script` handler runs JavaScript for each hook, for anything a template
+can't do: call an API and check its answer, branch on the payload, or post to
+a service without a preset. The script runs inside an async function, so it
+can `await` and `return`:
+
+```js
+const res = await fetch("https://api.telegram.org/bot" + secrets.TELEGRAM_BOT_TOKEN + "/sendMessage", {
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: {chat_id: vars.TELEGRAM_CHAT_ID, text: `New hook in #${hook.channel}\n\n${hook.text}`},
+});
+if (!res.ok) throw new Error("Telegram: HTTP " + res.status);
+```
+
+| Name | What it is |
+|---|---|
+| `hook` | `id`, `channel`, `payload`, `text`, `body`, `headers`, `url` (its page in the dashboard), `createdAt` |
+| `vars.NAME` | a `CATCHY_VAR_NAME` variable |
+| `secrets.NAME` | a `CATCHY_SECRET_NAME` secret; throws if it isn't set, and can't be listed |
+| `fetch(url, {method, headers, body})` | an HTTP request; returns `{ok, status, headers, text(), json()}`. An object body is sent as JSON |
+| `console.log` (and `warn`, `error`) | kept with the attempt, shown on the hook's page |
+
+Throwing an error fails the attempt, and it's retried like any other. A run
+is stopped after 10 seconds. Scripts are checked for syntax errors when you
+save. Presets: **Script** (a commented starting point) and **Telegram**.
 
 Each try is an **attempt**. A failed one is retried after 10s, 40s, 90s, and
 160s, then given up. When every handler of a hook succeeds, the hook becomes

@@ -1,0 +1,125 @@
+{{/* guard-fields is the guard form's fields, shared by Create on the Guards
+     page and a guard's own page (with .Editing). */}}
+{{define "guard-fields"}}
+    <div class="grid gap-3 sm:grid-cols-4">
+      <div>
+        <label for="guard-name" class="block text-xs font-medium text-gray-700 mb-1">Name</label>
+        <input id="guard-name" type="text" name="name" value="{{.Form.Name}}"{{if .Editing}} readonly{{end}} placeholder="stripe-prod" required maxlength="64" pattern="[a-z0-9]+([_\-][a-z0-9]+)*" autocomplete="off" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 read-only:bg-gray-50 read-only:text-gray-500 read-only:focus:ring-0">
+      </div>
+      <div>
+        <label for="guard-type" class="block text-xs font-medium text-gray-700 mb-1">Type</label>
+        <select id="guard-type" name="type" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          {{range .Types}}<option value="{{.}}"{{if eq . "signature"}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div>
+        <label for="guard-scheme" class="block text-xs font-medium text-gray-700 mb-1">Scheme</label>
+        <select id="guard-scheme" name="scheme" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          <option value="" data-type="">&mdash;</option>
+          {{range $type, $schemes := .Schemes}}{{range $schemes}}<option value="{{.}}" data-type="{{$type}}"{{if eq . "hmac"}} selected{{end}}>{{.}}</option>{{end}}{{end}}
+        </select>
+      </div>
+      <div>
+        <label for="guard-secret" class="block text-xs font-medium text-gray-700 mb-1">Secret</label>
+        <select id="guard-secret" name="secret" data-secret-select required class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono data-[unset]:border-red-300 data-[unset]:text-red-700">
+          <option value="">{{if .Env.SecretNames}}Choose a secret{{else}}No secrets yet{{end}}</option>
+          {{template "secretOptions" (secretOptions .Env .Form.Secret)}}
+        </select>
+      </div>
+    </div>
+    <!-- Settings keep one row's height whatever the type, so changing it
+         never moves the rest of the page. -->
+    <div class="mt-3 grid gap-3 sm:grid-cols-4 items-end sm:min-h-[58px]" id="guard-settings">
+      <div data-needs="field" class="sm:col-span-2" hidden>
+        <label for="guard-field" class="block text-xs font-medium text-gray-700 mb-1">Field <span class="font-normal text-gray-400">(hidden, must stay empty; start it with _ to hide it in payloads)</span></label>
+        <input id="guard-field" type="text" name="field" value="{{.Form.Field}}" placeholder="_gotcha" maxlength="64" disabled
+          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div data-needs="header">
+        <label for="guard-header" class="block text-xs font-medium text-gray-700 mb-1">Header</label>
+        <input id="guard-header" type="text" name="header" value="{{.Form.Header}}" maxlength="64" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div data-needs="prefix">
+        <label for="guard-prefix" class="block text-xs font-medium text-gray-700 mb-1">Prefix <span class="font-normal text-gray-400">(before the value)</span></label>
+        <input id="guard-prefix" type="text" name="prefix" value="{{.Form.Prefix}}" maxlength="64" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400 font-mono">
+      </div>
+      <div data-needs="algorithm">
+        <label for="guard-algorithm" class="block text-xs font-medium text-gray-700 mb-1">Algorithm</label>
+        <select id="guard-algorithm" name="algorithm" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          {{range .Algorithms}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div data-needs="algorithm">
+        <label for="guard-encoding" class="block text-xs font-medium text-gray-700 mb-1">Encoding</label>
+        <select id="guard-encoding" name="encoding" class="w-full rounded-md border border-gray-300 px-2 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400">
+          {{range .Encodings}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div data-needs="min-score" hidden>
+        <label for="guard-min-score" class="block text-xs font-medium text-gray-700 mb-1">Min score <span class="font-normal text-gray-400">(v3, 0–1)</span></label>
+        <input id="guard-min-score" type="number" name="min_score" value="{{.Form.MinScore}}" min="0.1" max="1" step="0.1" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:bg-gray-50 disabled:text-gray-400" disabled>
+      </div>
+      <p class="sm:col-span-4 self-center text-sm text-gray-400" id="guard-no-settings" hidden>No extra settings for this type.</p>
+    </div>
+    <div class="mt-4 flex items-center justify-between gap-3">
+      <p class="text-xs text-red-700" data-secret-hint hidden></p><span></span>
+      <button type="submit" class="shrink-0 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">{{if .Editing}}Save{{else}}Create{{end}}</button>
+    </div>
+{{end}}
+
+{{/* guard-form-js defines form, field(), needs(), and sync(), which fits the
+     form to the type and scheme. */}}
+{{define "guard-form-js"}}
+  const form = document.getElementById('guard-form');
+  const field = (id) => document.getElementById('guard-' + id);
+
+  // Which fields a type and scheme use.
+  const needs = (type, scheme) => ({
+    field: type === 'honeypot',
+    header: (type === 'signature' && scheme === 'hmac') || type === 'token',
+    prefix: (type === 'signature' && scheme === 'hmac') || type === 'token',
+    algorithm: type === 'signature' && scheme === 'hmac',
+    'min-score': type === 'captcha' && scheme === 'recaptcha',
+  });
+
+  // Fit the form to the type and scheme. Scheme and Secret stay in place,
+  // greyed out, when they don't apply; settings swap within their row.
+  const sync = () => {
+    const type = field('type').value;
+    const scheme = field('scheme');
+    const hasScheme = type === 'captcha' || type === 'signature';
+    let first = null;
+    for (const o of scheme.options) {
+      o.hidden = hasScheme ? o.dataset.type !== type : o.value !== '';
+      if (!o.hidden && !first) first = o;
+    }
+    if (scheme.selectedOptions[0]?.hidden && first) scheme.value = first.value;
+    scheme.disabled = !hasScheme;
+
+    const secret = field('secret');
+    secret.disabled = type === 'honeypot';
+    if (secret.disabled) selectSecret(secret, '');
+
+    const n = needs(type, scheme.value);
+    let shown = 0;
+    form.querySelectorAll('[data-needs]').forEach((el) => {
+      const on = n[el.dataset.needs];
+      el.hidden = !on;
+      el.querySelectorAll('input, select').forEach((i) => { i.disabled = !on; });
+      if (on) shown++;
+    });
+    field('no-settings').hidden = shown > 0;
+  };
+
+  for (const id of ['type', 'scheme']) field(id).addEventListener('change', sync);
+{{end}}
+
+{{/* guard-form-restore puts .Form's selects back as they were. */}}
+{{define "guard-form-restore"}}
+  field('type').value = {{.Form.Type}} || 'signature';
+  sync();
+  if ({{.Form.Scheme}}) field('scheme').value = {{.Form.Scheme}};
+  if ({{.Form.Algorithm}}) field('algorithm').value = {{.Form.Algorithm}};
+  if ({{.Form.Encoding}}) field('encoding').value = {{.Form.Encoding}};
+  sync();
+{{end}}

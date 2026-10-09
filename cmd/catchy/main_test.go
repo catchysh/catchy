@@ -366,8 +366,9 @@ func TestDashboard(t *testing.T) {
 	}
 	contactHooks, _ := database.ListHooks(t.Context(), db.HookFilter{Channel: "contact"}, 10)
 	database.SetHookStatus(t.Context(), contactHooks[0].ID, db.StatusFailed, "smtp", "<refused>")
+	// The list shows it failed; the reason is on the hook's page.
 	code, body = page("GET", "/?status=failed", "")
-	if code != 200 || !strings.Contains(body, "smtp: &lt;refused&gt;") {
+	if code != 200 || !strings.Contains(body, `href="/`+contactHooks[0].ID+`?status=failed"`) || strings.Contains(body, "&lt;refused&gt;") {
 		t.Fatalf("failed filter: %d\n%s", code, body)
 	}
 	if _, body := page("GET", "/"+contactHooks[0].ID, ""); !strings.Contains(body, "smtp: &lt;refused&gt;") || !strings.Contains(body, ">Retry</button>") {
@@ -431,8 +432,56 @@ func TestDashboard(t *testing.T) {
 		t.Fatalf("HMAC curl snippet missing: %d\n%s", code, body)
 	}
 
+	// Handlers: create one, open its page, edit it, and see it in the list.
+	code, body = page("POST", "/handlers", "name=fwd&type=http&method=POST&url=https%3A%2F%2Fexample.com%2Fhooks")
+	if code != 200 || !strings.Contains(body, `href="/handlers/fwd"`) || !strings.Contains(body, "POST example.com · forward") || !strings.Contains(body, ">never<") {
+		t.Fatalf("handlers list: %d\n%s", code, body)
+	}
+	code, body = page("GET", "/handlers/fwd", "")
+	if code != 200 || !strings.Contains(body, `value="https://example.com/hooks"`) || !strings.Contains(body, "readonly") || !strings.Contains(body, ">Save</button>") {
+		t.Fatalf("handler page: %d\n%s", code, body)
+	}
+	code, body = page("POST", "/handlers/fwd", "type=script&script=const+x+%3D+%3B")
+	if code != 422 || !strings.Contains(body, "SyntaxError") || !strings.Contains(body, "const x = ;") {
+		t.Fatalf("saving a broken script: %d\n%s", code, body)
+	}
+	code, body = page("POST", "/handlers/fwd", "type=script&script=console.log(hook.id)")
+	if code != 200 || !strings.Contains(body, "Saved.") {
+		t.Fatalf("saving a script: %d\n%s", code, body)
+	}
+	if h, _ := database.GetHandler(t.Context(), "fwd"); h.Type != "script" || !strings.Contains(h.Options, "console.log(hook.id)") {
+		t.Fatalf("saved handler = %+v", h)
+	}
+	if _, body := page("GET", "/handlers", ""); !strings.Contains(body, ">script</span>") || !strings.Contains(body, "1 line") {
+		t.Fatalf("list after editing:\n%s", body)
+	}
+	if code, _ := page("GET", "/handlers/missing", ""); code != 404 {
+		t.Fatalf("missing handler page: %d, want 404", code)
+	}
+	page("POST", "/handlers/fwd/delete", "")
+	if _, err := database.GetHandler(t.Context(), "fwd"); err == nil {
+		t.Fatal("handler still there after delete")
+	}
+
+	// A guard's page shows its settings; saving changes them.
+	code, body = page("GET", "/guards/jobs-key", "")
+	if code != 200 || !strings.Contains(body, `value="X-Catchy-Signature"`) || !strings.Contains(body, "readonly") || !strings.Contains(body, "#webhooks") {
+		t.Fatalf("guard page: %d\n%s", code, body)
+	}
+	code, body = page("POST", "/guards/jobs-key", "type=signature&scheme=hmac&header=X-Sig&algorithm=sha256&encoding=hex&secret=bad-name")
+	if code != 422 || !strings.Contains(body, "Secret names are") || !strings.Contains(body, `value="X-Sig"`) {
+		t.Fatalf("saving a bad guard: %d\n%s", code, body)
+	}
+	code, body = page("POST", "/guards/jobs-key", "type=signature&scheme=hmac&header=X-Sig&algorithm=sha256&encoding=hex&secret=JOBS_KEY")
+	if code != 200 || !strings.Contains(body, "Saved.") {
+		t.Fatalf("saving a guard: %d\n%s", code, body)
+	}
+	if g, _ := database.GetGuard(t.Context(), "jobs-key"); !strings.Contains(g.Options, "X-Sig") {
+		t.Fatalf("saved guard = %+v", g)
+	}
+
 	// Try to delete while attached, detach, delete.
-	if _, body := page("POST", "/guards/jobs-key/delete", ""); !strings.Contains(body, "Detach jobs-key") {
+	if _, body := page("POST", "/guards/jobs-key/delete", ""); !strings.Contains(body, "Detach it from its channels") {
 		t.Fatalf("deleting an attached guard: %s", body)
 	}
 	page("POST", "/channels/webhooks/guards", "guard=honeypot")

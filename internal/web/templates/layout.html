@@ -55,6 +55,9 @@
     .tok-key { color: #1d4ed8; }
     .tok-str { color: #047857; }
     .tok-lit { color: #b45309; }
+    .tok-com { color: #6b7280; font-style: italic; }
+    .tok-kw { color: #be185d; }
+    .tok-api { color: #7c3aed; }
     /* Selects draw their own chevron with room to the right, instead of the
        browser's arrow pressed against the edge. */
     select {
@@ -171,7 +174,7 @@
       const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const tpl = (s) => esc(s).replace(/\{\{[\s\S]*?\}\}/g, (m) => `<span class="tok-tpl">${m}</span>`);
       const token = /(\{\{[\s\S]*?\}\})|("(?:\\.|[^"\\])*")(\s*:)?|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\btrue\b|\bfalse\b|\bnull\b)/g;
-      const highlight = (text) => {
+      const highlightJSON = (text) => {
         let out = '', last = 0;
         for (const m of text.matchAll(token)) {
           out += esc(text.slice(last, m.index));
@@ -183,6 +186,31 @@
         // A trailing newline needs a character after it to take up a line.
         return out + esc(text.slice(last)) + '\n';
       };
+      // JavaScript, for script handlers: comments, strings (with ${…} in
+      // template strings), numbers and literals, keywords, and the names a
+      // script gets (hook, vars, secrets, fetch, console).
+      const jsToken = new RegExp([
+        /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))/.source,
+        /(`(?:\\[\s\S]|[^`\\])*`?|"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)/.source,
+        /(\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b(?:true|false|null|undefined)\b)/.source,
+        /(\b(?:const|let|var|if|else|return|await|async|function|throw|new|try|catch|finally|for|of|in|while|do|break|continue|switch|case|default|typeof|instanceof|class)\b)/.source,
+        /(\b(?:hook|vars|secrets|fetch|console|JSON)\b)/.source,
+      ].join('|'), 'g');
+      const jsString = (s) => s[0] !== '`' ? esc(s)
+        : esc(s).replace(/\$\{[^}]*\}/g, (m) => `<span class="tok-api">${m}</span>`);
+      const highlightJS = (text) => {
+        let out = '', last = 0;
+        for (const m of text.matchAll(jsToken)) {
+          out += esc(text.slice(last, m.index));
+          if (m[1]) out += `<span class="tok-com">${esc(m[1])}</span>`;
+          else if (m[2]) out += `<span class="tok-str">${jsString(m[2])}</span>`;
+          else if (m[3]) out += `<span class="tok-lit">${esc(m[3])}</span>`;
+          else if (m[4]) out += `<span class="tok-kw">${esc(m[4])}</span>`;
+          else out += `<span class="tok-api">${esc(m[5])}</span>`;
+          last = m.index + m[0].length;
+        }
+        return out + esc(text.slice(last)) + '\n';
+      };
       document.querySelectorAll('textarea[data-highlight]').forEach((ta) => {
         const wrap = document.createElement('div');
         wrap.className = 'code-field';
@@ -191,9 +219,21 @@
         ta.className = '';
         ta.parentNode.insertBefore(wrap, ta);
         wrap.append(pre, ta);
+        const highlight = ta.dataset.highlight === 'js' ? highlightJS : highlightJSON;
         const sync = () => { pre.innerHTML = highlight(ta.value); pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; };
         ta.addEventListener('input', sync);
         ta.addEventListener('scroll', sync);
+        // Tab indents by two spaces. Esc first lets Tab leave the field, as
+        // usual, for keyboard users.
+        let tabLeaves = false;
+        ta.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') { tabLeaves = true; return; }
+          if (e.key !== 'Tab' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || tabLeaves) return;
+          e.preventDefault();
+          ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+          sync();
+        });
+        ta.addEventListener('focus', () => { tabLeaves = false; });
         // Scripts that set .value directly (presets) don't fire input.
         const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
         Object.defineProperty(ta, 'value', { get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); sync(); } });

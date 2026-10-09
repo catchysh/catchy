@@ -47,15 +47,15 @@ func TestAttemptRows(t *testing.T) {
 	done := func(d time.Duration) *time.Time { t := at.Add(d); return &t }
 	rows := hookHandlerRows([]db.Attempt{
 		{Handler: "broken", Number: 1, Status: db.AttemptFailed, Error: "refused", FinishedAt: done(0)},
-		{Handler: "broken", Number: 2, Status: db.AttemptFailed, Error: "HTTP 503", HTTPStatus: 503, FinishedAt: done(10 * time.Second)},
+		{Handler: "broken", Number: 2, Status: db.AttemptFailed, Error: "HTTP 503", Code: 503, FinishedAt: done(10 * time.Second)},
 		{Handler: "broken", Number: 3, Status: db.AttemptPending, DueAt: at.Add(50 * time.Second)},
-		{Handler: "echo", Number: 1, Status: db.AttemptSucceeded, HTTPStatus: 200, MS: 12, FinishedAt: done(0)},
+		{Handler: "echo", Number: 1, Status: db.AttemptSucceeded, Code: 200, MS: 12, FinishedAt: done(0)},
 		{Handler: "new", Number: 1, Status: db.AttemptPending, DueAt: at},
 	})
 	if len(rows) != 3 {
 		t.Fatalf("rows = %+v", rows)
 	}
-	if b := rows[0]; b.Status != db.AttemptPending || b.Attempts != 2 || b.LastError != "HTTP 503" || b.NextAt != "12:00:50" || len(b.History) != 2 || b.History[1].Status != 503 {
+	if b := rows[0]; b.Status != db.AttemptPending || b.Attempts != 2 || b.LastError != "HTTP 503" || b.NextAt != "12:00:50" || len(b.History) != 2 || b.History[1].Code != 503 {
 		t.Errorf("broken = %+v", b)
 	}
 	if e := rows[1]; e.Status != db.AttemptSucceeded || e.Attempts != 1 || e.NextAt != "" || e.History[0].MS != 12 {

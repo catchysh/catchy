@@ -34,11 +34,12 @@ import (
 
 // Handler types.
 const (
-	HTTP = "http" // an HTTP request to a URL
+	HTTP   = "http"   // an HTTP request to a URL
+	Script = "script" // JavaScript
 )
 
 // Types lists every handler type, in display order.
-var Types = []string{HTTP}
+var Types = []string{HTTP, Script}
 
 // SignatureHeader carries the signature of signed requests: "sha256=" and
 // the hex HMAC-SHA256 of the body, the format hmac guards check.
@@ -57,6 +58,8 @@ type Options struct {
 	Body string `json:"body,omitempty"`
 	// SignWith names the secret that signs each request's body, if any.
 	SignWith string `json:"sign_with,omitempty"`
+	// Script is a script handler's JavaScript.
+	Script string `json:"script,omitempty"`
 }
 
 // ParseOptions decodes options stored as JSON.
@@ -100,6 +103,24 @@ const (
 	discordBody = `{"content": "New hook in #{{.Channel}}\n\n{{.Text}}"}`
 )
 
+// scriptExample is the Script preset: what a script can use.
+const scriptExample = `// Runs for each hook. hook has id, channel, payload, text, body, headers,
+// url, and createdAt; vars.NAME and secrets.NAME read CATCHY_VAR_NAME and
+// CATCHY_SECRET_NAME. fetch(url, {method, headers, body}) makes requests.
+// Throw to fail; failed attempts are retried. Logs are kept with each attempt.
+console.log(` + "`#${hook.channel}: ${hook.text}`" + `);`
+
+// telegramScript is the Telegram preset.
+const telegramScript = `const res = await fetch("https://api.telegram.org/bot" + secrets.TELEGRAM_BOT_TOKEN + "/sendMessage", {
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: {
+    chat_id: vars.TELEGRAM_CHAT_ID,
+    text: ` + "`New hook in #${hook.channel}\\n\\n${hook.text}\\n\\n${hook.url}`" + `,
+  },
+});
+if (!res.ok) throw new Error("Telegram: HTTP " + res.status + ": " + res.text());`
+
 // Presets are the dashboard's handler choices, grouped, in display order.
 var Presets = []Preset{
 	{"resend", "Resend", "Email each hook through Resend's API, with the RESEND_API_KEY secret; edit from and to in the body.", "Email", HTTP, "",
@@ -112,6 +133,25 @@ var Presets = []Preset{
 		Options{Method: http.MethodPost}},
 	{"signed", "Signed webhook", "Forward each hook to your URL, signed with the WEBHOOK_SIGNING_SECRET secret in X-Catchy-Signature.", "Forward", HTTP, "https://example.com/hooks",
 		Options{Method: http.MethodPost, SignWith: "WEBHOOK_SIGNING_SECRET"}},
+	{"script", "Script", "Run JavaScript for each hook: log it, call an API with fetch, anything.", "Script", Script, "",
+		Options{Script: scriptExample}},
+	{"telegram", "Telegram", "Send each hook to a Telegram chat with a bot: the TELEGRAM_BOT_TOKEN secret and the TELEGRAM_CHAT_ID variable.", "Script", Script, "",
+		Options{Script: telegramScript}},
+}
+
+// validateScript checks a script handler: it must compile.
+func validateScript(opts Options) (Options, error) {
+	src := strings.TrimRight(opts.Script, " \t\r\n")
+	if strings.TrimSpace(src) == "" {
+		return Options{}, errors.New("a script handler needs a script")
+	}
+	if len(src) > MaxScriptLen {
+		return Options{}, fmt.Errorf("scripts are at most %d KB", MaxScriptLen>>10)
+	}
+	if _, err := compileScript(src); err != nil {
+		return Options{}, fmt.Errorf("script: %v", scriptError(err))
+	}
+	return Options{Script: src}, nil
 }
 
 // PresetGroup is a group of presets, for the dashboard's picker.
@@ -138,7 +178,11 @@ func PresetGroups() []PresetGroup {
 // the URL as an http or https URL. Secrets that aren't set in e are allowed;
 // attempts fail until they are.
 func Validate(typ string, opts Options, e env.Env) (Options, error) {
-	if typ != HTTP {
+	switch typ {
+	case HTTP:
+	case Script:
+		return validateScript(opts)
+	default:
 		return Options{}, fmt.Errorf("unknown handler type %q: use %s", typ, strings.Join(Types, ", "))
 	}
 	if opts.Method == "" {
@@ -214,6 +258,9 @@ func SecretsUsed(o Options) []string {
 	for _, m := range secretRef.FindAllStringSubmatch(o.URL+"\n"+o.Headers+"\n"+o.Body, -1) {
 		names = append(names, m[1])
 	}
+	for _, m := range scriptSecretRef.FindAllStringSubmatch(o.Script, -1) {
+		names = append(names, m[1])
+	}
 	if o.SignWith != "" {
 		names = append(names, o.SignWith)
 	}
@@ -224,14 +271,28 @@ func SecretsUsed(o Options) []string {
 var secretRef = regexp.MustCompile(`\.Secrets\.([A-Za-z_][A-Za-z0-9_]*)`)
 
 // Describe summarizes a handler for display, e.g. "http · POST
-// api.resend.com", "http · POST {{.Secrets.SLACK_WEBHOOK_URL}}", or
-// "http · POST example.com · forward · signed".
+// api.resend.com", "http · POST example.com · forward · signed", or
+// "script · 3 lines".
 func Describe(typ string, o Options) string {
+	return typ + " · " + Target(typ, o)
+}
+
+// Target says what a handler does without its type: "POST api.resend.com",
+// "POST {{.Secrets.SLACK_WEBHOOK_URL}}", "POST example.com · forward ·
+// signed", or "3 lines" for a script.
+func Target(typ string, o Options) string {
+	if typ == Script {
+		n := strings.Count(strings.TrimSpace(o.Script), "\n") + 1
+		if n == 1 {
+			return "1 line"
+		}
+		return fmt.Sprintf("%d lines", n)
+	}
 	where := o.URL
 	if u, err := url.Parse(o.URL); err == nil && u.Host != "" && !strings.Contains(o.URL, "{{") {
 		where = u.Host
 	}
-	s := typ + " · " + o.Method + " " + where
+	s := o.Method + " " + where
 	if o.Body == "" {
 		s += " · forward"
 	}
@@ -651,12 +712,41 @@ func (s *Runner) client() *http.Client {
 	return &http.Client{Timeout: 15 * time.Second}
 }
 
-// Run runs a handler on a hook and returns the HTTP status of the
-// response, if there was one. A returned error means it should be retried.
-func (s *Runner) Run(ctx context.Context, dst db.Handler, h db.Hook) (int, error) {
-	if dst.Type != HTTP {
-		return 0, fmt.Errorf("unknown handler type %q", dst.Type)
+// Result is what running a handler produced.
+type Result struct {
+	Code   int    // the response code: for http handlers, the HTTP status
+	Output string // for script handlers, what they logged
+}
+
+// Run runs a handler on a hook. A returned error means it failed and should
+// be retried.
+func (s *Runner) Run(ctx context.Context, dst db.Handler, h db.Hook) (Result, error) {
+	switch dst.Type {
+	case HTTP:
+		status, err := s.runHTTP(ctx, dst, h)
+		return Result{Code: status}, err
+	case Script:
+		o, err := ParseOptions(dst.Options)
+		if err != nil {
+			return Result{}, err
+		}
+		for _, name := range SecretsUsed(o) {
+			if _, err := s.Env.Secret(name); err != nil {
+				return Result{}, err
+			}
+		}
+		data := newData(h, strings.TrimRight(s.Dashboard, "/"))
+		data.Vars = s.Env.Vars
+		data.env = s.Env
+		out, err := s.runScript(ctx, o.Script, data, h.Headers)
+		return Result{Output: out}, err
 	}
+	return Result{}, fmt.Errorf("unknown handler type %q", dst.Type)
+}
+
+// runHTTP runs an http handler on a hook and returns the HTTP status of the
+// response, if there was one.
+func (s *Runner) runHTTP(ctx context.Context, dst db.Handler, h db.Hook) (int, error) {
 	o, err := ParseOptions(dst.Options)
 	if err != nil {
 		return 0, err
@@ -779,8 +869,8 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	for _, dl := range due {
 		var retryIn time.Duration
 		start := time.Now()
-		status, err := w.Runner.Run(ctx, dl.Handler, dl.Hook)
-		outcome := db.Outcome{HTTPStatus: status, MS: time.Since(start).Milliseconds()}
+		result, err := w.Runner.Run(ctx, dl.Handler, dl.Hook)
+		outcome := db.Outcome{Code: result.Code, Output: result.Output, MS: time.Since(start).Milliseconds()}
 		if err != nil {
 			outcome.Error = err.Error()
 			// Attempt n is retried after Backoff[n-1], while there is one.

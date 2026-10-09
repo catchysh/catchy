@@ -114,6 +114,23 @@ func (d *DB) ListGuards(ctx context.Context) ([]Guard, error) {
 	return guards, nil
 }
 
+// UpdateGuard replaces a guard's type, scheme, options, and secret. Hooks
+// are checked with the new settings from then on.
+func (d *DB) UpdateGuard(ctx context.Context, g Guard) (*Guard, error) {
+	if g.Options == "" {
+		g.Options = "{}"
+	}
+	query := d.q(`UPDATE guards SET type = ?, scheme = ?, options = ?, secret = ? WHERE name = ?`)
+	result, err := d.sql.ExecContext(ctx, query, g.Type, g.Scheme, g.Options, g.Secret, g.Name)
+	if err != nil {
+		return nil, fmt.Errorf("updating guard: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("guard not found: %s", g.Name)
+	}
+	return d.GetGuard(ctx, g.Name)
+}
+
 // DeleteGuard deletes a guard. It refuses with ErrGuardInUse while the guard
 // is attached to any channel, so no channel loses protection by accident.
 func (d *DB) DeleteGuard(ctx context.Context, name string) error {
