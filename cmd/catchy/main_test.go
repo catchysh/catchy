@@ -236,6 +236,34 @@ func TestAPIRequiresKey(t *testing.T) {
 	}
 }
 
+func TestTick(t *testing.T) {
+	_, srv := newTestServer(t)
+	if code := call(t, srv, "POST", "/tick", "", "", "", nil); code != 204 {
+		t.Fatalf("open tick: %d, want 204", code)
+	}
+
+	// With TICK_SECRET set, only it ticks; an API key isn't enough.
+	database, err := db.New(t.Context(), "sqlite", "file:"+t.TempDir()+"/tick.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close(context.Background()) })
+	if err := database.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mux, err := newMux(database, config{hostname: "http://localhost", sessionSecret: "test", tickSecret: "tick-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := httptest.NewServer(mux)
+	t.Cleanup(locked.Close)
+	for key, want := range map[string]int{"": 401, "bogus": 401, apiKey(t, database, "scheduler"): 401, "tick-secret": 204} {
+		if code := call(t, locked, "POST", "/tick", key, "", "", nil); code != want {
+			t.Fatalf("key %q: %d, want %d", key, code, want)
+		}
+	}
+}
+
 func TestNamedRoutesWinOverHooks(t *testing.T) {
 	_, srv := newTestServer(t)
 

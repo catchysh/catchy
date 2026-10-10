@@ -290,9 +290,6 @@ func TestWorker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n, err := database.EnqueueAttempts(t.Context(), h.ID, "contact"); err != nil || n != 1 {
-			t.Fatalf("EnqueueAttempts = %d, %v", n, err)
-		}
 		return h.ID
 	}
 	run := func() {

@@ -267,24 +267,52 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 }
 
 // schedule queues a try of a hook to a handler.
+// querier is a database or a transaction.
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 func (d *DB) schedule(ctx context.Context, hookID, handler string, attempt int, due time.Time) error {
+	return d.scheduleIn(ctx, d.sql, hookID, handler, attempt, due)
+}
+
+func (d *DB) scheduleIn(ctx context.Context, q querier, hookID, handler string, attempt int, due time.Time) error {
 	query := d.q(`INSERT INTO attempts (id, hook_id, handler, number, status, due_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-	if _, err := d.sql.ExecContext(ctx, query, NewID(), hookID, handler, attempt, AttemptPending, due, time.Now().UTC()); err != nil {
+	if _, err := q.ExecContext(ctx, query, NewID(), hookID, handler, attempt, AttemptPending, due, time.Now().UTC()); err != nil {
 		return fmt.Errorf("queueing attempt: %w", err)
 	}
 	return nil
 }
 
 // EnqueueAttempts queues a hook for every handler attached to its
-// channel, due now. It returns how many were queued.
+// channel, due now. It returns how many were queued. CreateHook already
+// does this for a new hook.
 func (d *DB) EnqueueAttempts(ctx context.Context, hookID, channel string) (int, error) {
-	dsts, err := d.ChannelHandlers(ctx, channel)
+	return d.enqueue(ctx, d.sql, hookID, channel)
+}
+
+func (d *DB) enqueue(ctx context.Context, q querier, hookID, channel string) (int, error) {
+	rows, err := q.QueryContext(ctx, d.q(`SELECT handler FROM channels_handlers WHERE channel = ? ORDER BY handler`), channel)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("listing channel handlers: %w", err)
+	}
+	var dsts []string
+	for rows.Next() {
+		var dst string
+		if err := rows.Scan(&dst); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning channel handler: %w", err)
+		}
+		dsts = append(dsts, dst)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("listing channel handlers: %w", err)
 	}
 	now := time.Now().UTC()
 	for _, dst := range dsts {
-		if err := d.schedule(ctx, hookID, dst, 1, now); err != nil {
+		if err := d.scheduleIn(ctx, q, hookID, dst, 1, now); err != nil {
 			return 0, err
 		}
 	}

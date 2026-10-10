@@ -276,6 +276,28 @@ Each try is an **attempt**. A failed one is retried after 10s, 40s, 90s, and
 **retry** runs its failed handlers again. Each hook's page lists its handlers
 with every attempt: when, the HTTP status, the error, and how long it took.
 
+Attempts are sent by a loop in the server that checks every second. Two more
+ways to send them work beside it, since each attempt is claimed by whoever
+sends it:
+
+- **`catchy worker`**: the same loop as its own process, for more capacity.
+  It needs `DATABASE_URL`, `HOSTNAME`, and the `CATCHY_` variables, not the
+  sign-in settings.
+- **A scheduler**, where instances sleep between requests, like Cloud Run
+  scaled to zero, so the loop barely runs. Have it call `/tick`, say every
+  minute:
+
+  ```bash
+  curl -X POST "$CATCHY/tick"
+  # with TICK_SECRET set:
+  curl -X POST -H "Authorization: Bearer $TICK_SECRET" "$CATCHY/tick"
+  ```
+
+  Each tick sends whatever is due, so retries wait for the next one: with a
+  minute between ticks, 10s and 40s become about a minute. Anyone can tick,
+  as it only sends what's already due, never twice; set `TICK_SECRET` to
+  require a token anyway.
+
 ## Secrets
 
 Secrets are environment variables named `CATCHY_SECRET_NAME`, usually set by
@@ -361,6 +383,7 @@ docker compose up
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret | required |
 | `ALLOWED_DOMAINS` | Comma-separated list of allowed email domains | — (all allowed) |
 | `AUTO_CREATE_CHANNELS` | Let a hook to an unknown channel create it; `false` answers such hooks with `404` | `true` |
+| `TICK_SECRET` | Bearer token `POST /tick` requires to send due attempts ([more](#handlers)) | — (open) |
 | `TRUST_PROXY` | Take the sender's IP from `X-Forwarded-For` (`true` only behind a proxy that sets it) | — |
 | `CATCHY_VAR_*` | Variables for handler templates, as `{{.Vars.NAME}}` | — |
 | `CATCHY_SECRET_*` | [Secrets](#secrets) for handlers and guards, used by name: `CATCHY_SECRET_RESEND_API_KEY` is `RESEND_API_KEY` | — |
@@ -385,6 +408,7 @@ catchy migrate
 
 ```
 catchy serve [--migrate]   # start the server (default), optionally run migrations first
+catchy worker              # send queued attempts without serving
 catchy migrate             # run database migrations and exit
 catchy version             # print version
 catchy help                # print usage

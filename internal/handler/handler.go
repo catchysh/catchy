@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"text/template/parse"
 	"time"
@@ -860,27 +861,52 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce sends the attempts that are due now.
+// claimBatch is how many due attempts are claimed at a time.
+const claimBatch = 20
+
+// RunOnce sends the attempts that are due now, batch by batch until none
+// are left.
 func (w *Worker) RunOnce(ctx context.Context) error {
-	due, err := w.DB.ClaimDueAttempts(ctx, 20, 2*time.Minute)
-	if err != nil {
-		return err
-	}
-	for _, dl := range due {
-		var retryIn time.Duration
-		start := time.Now()
-		result, err := w.Runner.Run(ctx, dl.Handler, dl.Hook)
-		outcome := db.Outcome{Code: result.Code, Output: result.Output, MS: time.Since(start).Milliseconds()}
-		if err != nil {
-			outcome.Error = err.Error()
-			// Attempt n is retried after Backoff[n-1], while there is one.
-			if dl.Number <= len(Backoff) {
-				retryIn = Backoff[dl.Number-1]
-			}
-		}
-		if err := w.DB.FinishAttempt(ctx, dl.ID, outcome, retryIn); err != nil {
+	for {
+		n, err := w.runBatch(ctx)
+		if err != nil || n < claimBatch || ctx.Err() != nil {
 			return err
 		}
 	}
-	return nil
+}
+
+// runBatch sends one batch of due attempts and says how many it claimed.
+// They're sent at once, so the batch takes as long as its slowest send, well
+// within the claim's lease; sent one by one, slow handlers could outlast it,
+// and another worker would claim and send the rest again. Outcomes are then
+// recorded one by one.
+func (w *Worker) runBatch(ctx context.Context) (int, error) {
+	due, err := w.DB.ClaimDueAttempts(ctx, claimBatch, 2*time.Minute)
+	if err != nil {
+		return 0, err
+	}
+	outcomes := make([]db.Outcome, len(due))
+	retryIns := make([]time.Duration, len(due))
+	var wg sync.WaitGroup
+	for i, dl := range due {
+		wg.Go(func() {
+			start := time.Now()
+			result, err := w.Runner.Run(ctx, dl.Handler, dl.Hook)
+			outcomes[i] = db.Outcome{Code: result.Code, Output: result.Output, MS: time.Since(start).Milliseconds()}
+			if err != nil {
+				outcomes[i].Error = err.Error()
+				// Attempt n is retried after Backoff[n-1], while there is one.
+				if dl.Number <= len(Backoff) {
+					retryIns[i] = Backoff[dl.Number-1]
+				}
+			}
+		})
+	}
+	wg.Wait()
+	for i, dl := range due {
+		if err := w.DB.FinishAttempt(ctx, dl.ID, outcomes[i], retryIns[i]); err != nil {
+			return 0, err
+		}
+	}
+	return len(due), nil
 }

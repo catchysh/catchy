@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/validate"
@@ -65,6 +69,7 @@ var usage = "Usage: catchy " + Version + ` <command>
 
 Commands:
   serve [--migrate]   Start the server (default)
+  worker              Send queued attempts without serving
   migrate             Run database migrations and exit
 `
 
@@ -86,6 +91,8 @@ func main() {
 	switch cmd {
 	case "serve":
 		cmdServe(migrate)
+	case "worker":
+		cmdWorker()
 	case "migrate":
 		cmdMigrate()
 	case "version", "-v", "--version":
@@ -121,6 +128,7 @@ type config struct {
 	autoCreate         bool // hooks to unknown channels create them
 	guards             guard.Checker
 	env                envvars.Env // CATCHY_VAR_ and CATCHY_SECRET_ variables
+	tickSecret         string      // when set, POST /tick needs it as its Bearer token
 }
 
 func cmdServe(migrate bool) {
@@ -145,6 +153,7 @@ func cmdServe(migrate bool) {
 		googleClientSecret: envRequired("GOOGLE_CLIENT_SECRET"),
 		trustProxy:         os.Getenv("TRUST_PROXY") == "true",
 		autoCreate:         os.Getenv("AUTO_CREATE_CHANNELS") != "false",
+		tickSecret:         os.Getenv("TICK_SECRET"),
 	}
 	var skipped []string
 	cfg.env, skipped = envvars.Load(os.Environ())
@@ -171,9 +180,9 @@ func cmdServe(migrate bool) {
 		log.Fatalf("failed to set up routes: %v", err)
 	}
 
-	// Send hooks to their channels' handlers in the background.
-	worker := &handler.Worker{DB: database, Runner: &handler.Runner{Dashboard: cfg.hostname, Env: cfg.env}}
-	go worker.Run(context.Background())
+	// Send hooks to their channels' handlers in the background. Where that
+	// can't run between requests, a scheduler calls POST /tick too.
+	go newWorker(database, cfg.hostname, cfg.env).Run(context.Background())
 
 	addr := ":" + port
 	log.Printf("listening on %s", addr)
@@ -181,6 +190,60 @@ func cmdServe(migrate bool) {
 	if err := http.ListenAndServe(addr, h2c.NewHandler(mux, &http2.Server{})); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func newWorker(database *db.DB, hostname string, e envvars.Env) *handler.Worker {
+	return &handler.Worker{DB: database, Runner: &handler.Runner{Dashboard: hostname, Env: e}}
+}
+
+// tick sends the attempts that are due, for a scheduler to call where
+// nothing runs between requests. It's harmless to call, since it sends only
+// what's due and never twice, so it's open unless secret is set; then that's
+// its Bearer token. One tick runs at a time: calls during it return at once.
+func tick(w *handler.Worker, secret string) http.HandlerFunc {
+	var running sync.Mutex
+	return func(rw http.ResponseWriter, r *http.Request) {
+		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if secret != "" && subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
+			http.Error(rw, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !running.TryLock() {
+			rw.WriteHeader(http.StatusNoContent)
+			return
+		}
+		defer running.Unlock()
+		// A caller hanging up doesn't cut sends short: that would leave
+		// attempts claimed but unfinished, to be sent again later.
+		if err := w.RunOnce(context.WithoutCancel(r.Context())); err != nil {
+			log.Printf("tick: %v", err)
+			http.Error(rw, "sending attempts failed", http.StatusInternalServerError)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// cmdWorker sends queued attempts until stopped, in its own process, beside
+// serve's own loop: workers claim attempts, so none is sent twice. It needs
+// only the database and what handlers use: HOSTNAME and the CATCHY_
+// variables.
+func cmdWorker() {
+	database, err := openDB()
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+	defer database.Close(context.Background())
+
+	e, skipped := envvars.Load(os.Environ())
+	for _, name := range skipped {
+		log.Printf("ignoring %s: names after CATCHY_VAR_ and CATCHY_SECRET_ are letters, digits, and _", name)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	log.Println("sending attempts")
+	newWorker(database, env("HOSTNAME", "http://localhost:8080"), e).Run(ctx)
 }
 
 func newMux(database *db.DB, cfg config) (*http.ServeMux, error) {
@@ -254,6 +317,7 @@ func newMux(database *db.DB, cfg config) (*http.ServeMux, error) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("POST /tick", tick(newWorker(database, cfg.hostname, cfg.env), cfg.tickSecret))
 
 	web.NewHandler(database, sessions, cfg.hostname, Version, cfg.env).RegisterRoutes(mux)
 
