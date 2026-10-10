@@ -860,11 +860,25 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce sends the attempts that are due now.
+// claimBatch is how many due attempts are claimed at a time.
+const claimBatch = 20
+
+// RunOnce sends the attempts that are due now, batch by batch until none
+// are left.
 func (w *Worker) RunOnce(ctx context.Context) error {
-	due, err := w.DB.ClaimDueAttempts(ctx, 20, 2*time.Minute)
+	for {
+		n, err := w.runBatch(ctx)
+		if err != nil || n < claimBatch || ctx.Err() != nil {
+			return err
+		}
+	}
+}
+
+// runBatch sends one batch of due attempts and says how many it claimed.
+func (w *Worker) runBatch(ctx context.Context) (int, error) {
+	due, err := w.DB.ClaimDueAttempts(ctx, claimBatch, 2*time.Minute)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, dl := range due {
 		var retryIn time.Duration
@@ -879,8 +893,8 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			}
 		}
 		if err := w.DB.FinishAttempt(ctx, dl.ID, outcome, retryIn); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	return len(due), nil
 }

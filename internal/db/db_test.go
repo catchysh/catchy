@@ -383,7 +383,9 @@ func TestUpdateHandlerAndLastAttempts(t *testing.T) {
 
 	database.SetChannelHandlers(t.Context(), "contact", []string{"fwd"})
 	hook := createHook(t, database, "contact")
-	database.EnqueueAttempts(t.Context(), hook.ID, "contact")
+	if attempts, _ := database.HookAttempts(t.Context(), []string{hook.ID}); len(attempts[hook.ID]) != 1 {
+		t.Fatalf("attempts queued with the hook = %+v", attempts[hook.ID])
+	}
 	if last, _ := database.LastAttempts(t.Context()); len(last) != 0 {
 		t.Fatalf("last attempts before any ran = %+v", last)
 	}

@@ -304,12 +304,11 @@ func scanHook(row interface{ Scan(...any) error }) (*Hook, error) {
 	return &h, nil
 }
 
-// CreateHook inserts h as a pending hook, creating its channel if needed, and
-// returns it with its ID and creation time set.
+// CreateHook inserts h as a pending hook, creating its channel if needed,
+// and queues an attempt for each of the channel's handlers, all or nothing:
+// a hook is never stored without its attempts. It returns h with its ID and
+// creation time set.
 func (d *DB) CreateHook(ctx context.Context, h Hook) (*Hook, error) {
-	if err := d.EnsureChannel(ctx, h.Channel); err != nil {
-		return nil, err
-	}
 	h.ID = NewID()
 	h.Status = StatusPending
 	h.FinalizedAt = nil
@@ -324,14 +323,28 @@ func (d *DB) CreateHook(ctx context.Context, h Hook) (*Hook, error) {
 		return nil, fmt.Errorf("encoding headers: %w", err)
 	}
 
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("inserting hook: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO channels (name) VALUES (?) ON CONFLICT (name) DO NOTHING`), h.Channel); err != nil {
+		return nil, fmt.Errorf("creating channel: %w", err)
+	}
 	// Times are stored in UTC so SQLite, which compares them as text, orders
 	// them correctly. It's read back because Postgres stores microseconds.
 	query := d.q(`INSERT INTO hooks (` + hookColumns + `)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) RETURNING created_at`)
-	if err := d.sql.QueryRowContext(ctx, query,
+	if err := tx.QueryRowContext(ctx, query,
 		h.ID, h.Channel, h.Status, h.Method, h.Query, string(headers),
 		h.ContentType, h.Body, h.IP, time.Now().UTC()).
 		Scan(&h.CreatedAt); err != nil {
+		return nil, fmt.Errorf("inserting hook: %w", err)
+	}
+	if _, err := d.enqueue(ctx, tx, h.ID, h.Channel); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("inserting hook: %w", err)
 	}
 	return &h, nil
