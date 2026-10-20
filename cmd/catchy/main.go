@@ -13,11 +13,11 @@ import (
 	"sync"
 	"syscall"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectproto"
 	"connectrpc.com/validate"
 	"connectrpc.com/vanguard"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
@@ -187,9 +187,24 @@ func cmdServe(migrate bool) {
 	addr := ":" + port
 	log.Printf("listening on %s", addr)
 
-	if err := http.ListenAndServe(addr, h2c.NewHandler(mux, &http2.Server{})); err != nil {
+	// gRPC clients need HTTP/2, which they speak without TLS here.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server := &http.Server{Addr: addr, Handler: mux, Protocols: protocols}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// authMux puts every route connecthttp.Mount registers behind auth.
+type authMux struct {
+	*http.ServeMux
+	auth func(http.Handler) http.Handler
+}
+
+func (m authMux) Handle(pattern string, h http.Handler) {
+	m.ServeMux.Handle(pattern, m.auth(h))
 }
 
 func newWorker(database *db.DB, hostname string, e envvars.Env) *handler.Worker {
@@ -259,18 +274,16 @@ func newMux(database *db.DB, cfg config) (*http.ServeMux, error) {
 	apiKeys := auth.NewAPIKeyHandler(database, sessions)
 
 	svc := service.New(database)
-	validator := connect.WithInterceptors(validate.NewInterceptor())
-	hooksPath, hooksHandler := catchyv1connect.NewHookServiceHandler(svc, validator)
-	channelsPath, channelsHandler := catchyv1connect.NewChannelServiceHandler(svc, validator)
+	server := connect.NewServer(validate.NewServerInterceptor())
+	catchyv1connect.RegisterHookServiceHandler(server, svc)
+	catchyv1connect.RegisterChannelServiceHandler(server, svc)
 
-	restOpts := vanguard.WithRESTUnmarshalOptions(vanguard.RESTUnmarshalOptions{
-		DiscardUnknownQueryParams: true,
-	})
-	transcoder, err := vanguard.NewTranscoder([]*vanguard.Service{
-		vanguard.NewService(hooksPath, hooksHandler, restOpts),
-		vanguard.NewService(channelsPath, channelsHandler, restOpts),
-	},
-		vanguard.WithCodec(func(res vanguard.TypeResolver) vanguard.Codec {
+	// Vanguard claims "/" on whatever mux it mounts on, so REST gets its own
+	// mux and the main one forwards only /v1/ to it.
+	rest := http.NewServeMux()
+	err := vanguard.Mount(rest, server,
+		vanguard.WithDiscardUnknownQueryParams(true),
+		vanguard.WithCodec(func(res connectproto.TypeResolver) vanguard.RESTCodec {
 			codec := vanguard.NewJSONCodec(res)
 			codec.MarshalOptions.UseProtoNames = true
 			codec.MarshalOptions.EmitUnpopulated = true
@@ -279,7 +292,7 @@ func newMux(database *db.DB, cfg config) (*http.ServeMux, error) {
 		}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("creating transcoder: %w", err)
+		return nil, fmt.Errorf("mounting REST routes: %w", err)
 	}
 
 	apiAuth := auth.RequireAPIKey(database)
@@ -288,9 +301,8 @@ func newMux(database *db.DB, cfg config) (*http.ServeMux, error) {
 	oauth.RegisterRoutes(mux)
 	apiKeys.RegisterRoutes(mux)
 
-	mux.Handle("/v1/", apiAuth(transcoder))
-	mux.Handle(hooksPath, apiAuth(transcoder))
-	mux.Handle(channelsPath, apiAuth(transcoder))
+	mux.Handle("/v1/", apiAuth(rest))
+	connecthttp.Mount(authMux{mux, apiAuth}, server)
 
 	// Static files are revalidated on every use, so a changed logo or favicon
 	// shows up without a hard refresh; unchanged files cost a 304.

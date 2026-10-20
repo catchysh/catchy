@@ -4,16 +4,15 @@ go 1.26.1
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
-	connectrpc.com/connect v1.21.0
-	connectrpc.com/validate v0.7.0
-	connectrpc.com/vanguard v0.4.0
+	connectrpc.com/connect/v2 v2.0.1
+	connectrpc.com/validate v0.9.0
+	connectrpc.com/vanguard v0.5.0
 	github.com/dop251/goja v0.0.0-20261008222547-e9f698900731
 	github.com/google/gnostic v0.7.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pressly/goose/v3 v3.28.0
-	golang.org/x/net v0.59.0
 	golang.org/x/oauth2 v0.37.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc
 	google.golang.org/protobuf v1.36.12
@@ -25,6 +24,7 @@ require (
 	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
+	connectrpc.com/connect v1.21.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/dlclark/regexp2/v2 v2.8.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -36,9 +36,9 @@ func New(database *db.DB) *Service {
 // dbError maps a db-layer error to the appropriate connect code.
 func dbError(err error) error {
 	if strings.Contains(err.Error(), "not found") {
-		return connect.NewError(connect.CodeNotFound, err)
+		return connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }
 
 func hookProto(h *db.Hook, events []db.Event) (*catchyv1.Hook, error) {
@@ -87,15 +87,15 @@ func channelProto(c *db.Channel) *catchyv1.Channel {
 
 // Hooks
 
-func (s *Service) ListHooks(ctx context.Context, req *connect.Request[catchyv1.ListHooksRequest]) (*connect.Response[catchyv1.ListHooksResponse], error) {
+func (s *Service) ListHooks(ctx context.Context, req *catchyv1.ListHooksRequest) (*catchyv1.ListHooksResponse, error) {
 	limit := defaultPageSize
-	if req.Msg.Limit != nil {
-		limit = int(*req.Msg.Limit)
+	if req.Limit != nil {
+		limit = int(*req.Limit)
 	}
 	hooks, err := s.db.ListHooks(ctx, db.HookFilter{
-		Channel: req.Msg.GetChannel(),
-		Status:  req.Msg.GetStatus(),
-		After:   req.Msg.GetAfter(),
+		Channel: req.GetChannel(),
+		Status:  req.GetStatus(),
+		After:   req.GetAfter(),
 	}, limit)
 	if err != nil {
 		return nil, dbError(err)
@@ -112,15 +112,15 @@ func (s *Service) ListHooks(ctx context.Context, req *connect.Request[catchyv1.L
 	for _, h := range hooks {
 		p, err := hookProto(&h, events[h.ID])
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		resp.Hooks = append(resp.Hooks, p)
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
-func (s *Service) GetHook(ctx context.Context, req *connect.Request[catchyv1.GetHookRequest]) (*connect.Response[catchyv1.GetHookResponse], error) {
-	h, err := s.db.GetHook(ctx, req.Msg.Id)
+func (s *Service) GetHook(ctx context.Context, req *catchyv1.GetHookRequest) (*catchyv1.GetHookResponse, error) {
+	h, err := s.db.GetHook(ctx, req.Id)
 	if err != nil {
 		return nil, dbError(err)
 	}
@@ -128,23 +128,23 @@ func (s *Service) GetHook(ctx context.Context, req *connect.Request[catchyv1.Get
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&catchyv1.GetHookResponse{Hook: p}), nil
+	return &catchyv1.GetHookResponse{Hook: p}, nil
 }
 
-func (s *Service) DiscardHook(ctx context.Context, req *connect.Request[catchyv1.DiscardHookRequest]) (*connect.Response[catchyv1.DiscardHookResponse], error) {
-	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusDiscarded)
+func (s *Service) DiscardHook(ctx context.Context, req *catchyv1.DiscardHookRequest) (*catchyv1.DiscardHookResponse, error) {
+	h, err := s.setHookStatus(ctx, req.Id, db.StatusDiscarded)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&catchyv1.DiscardHookResponse{Hook: h}), nil
+	return &catchyv1.DiscardHookResponse{Hook: h}, nil
 }
 
-func (s *Service) RetryHook(ctx context.Context, req *connect.Request[catchyv1.RetryHookRequest]) (*connect.Response[catchyv1.RetryHookResponse], error) {
-	h, err := s.setHookStatus(ctx, req.Msg.Id, db.StatusPending)
+func (s *Service) RetryHook(ctx context.Context, req *catchyv1.RetryHookRequest) (*catchyv1.RetryHookResponse, error) {
+	h, err := s.setHookStatus(ctx, req.Id, db.StatusPending)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&catchyv1.RetryHookResponse{Hook: h}), nil
+	return &catchyv1.RetryHookResponse{Hook: h}, nil
 }
 
 // setHookStatus sets a hook's status as the API key making the request.
@@ -164,21 +164,21 @@ func (s *Service) hookProto(ctx context.Context, h *db.Hook) (*catchyv1.Hook, er
 	}
 	p, err := hookProto(h, events[h.ID])
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	return p, nil
 }
 
-func (s *Service) DeleteHook(ctx context.Context, req *connect.Request[catchyv1.DeleteHookRequest]) (*connect.Response[catchyv1.DeleteHookResponse], error) {
-	if err := s.db.DeleteHook(ctx, req.Msg.Id); err != nil {
+func (s *Service) DeleteHook(ctx context.Context, req *catchyv1.DeleteHookRequest) (*catchyv1.DeleteHookResponse, error) {
+	if err := s.db.DeleteHook(ctx, req.Id); err != nil {
 		return nil, dbError(err)
 	}
-	return connect.NewResponse(&catchyv1.DeleteHookResponse{}), nil
+	return &catchyv1.DeleteHookResponse{}, nil
 }
 
 // Channels
 
-func (s *Service) ListChannels(ctx context.Context, _ *connect.Request[catchyv1.ListChannelsRequest]) (*connect.Response[catchyv1.ListChannelsResponse], error) {
+func (s *Service) ListChannels(ctx context.Context, _ *catchyv1.ListChannelsRequest) (*catchyv1.ListChannelsResponse, error) {
 	channels, err := s.db.ListChannels(ctx)
 	if err != nil {
 		return nil, dbError(err)
@@ -187,36 +187,36 @@ func (s *Service) ListChannels(ctx context.Context, _ *connect.Request[catchyv1.
 	for _, c := range channels {
 		resp.Channels = append(resp.Channels, channelProto(&c))
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
-func (s *Service) GetChannel(ctx context.Context, req *connect.Request[catchyv1.GetChannelRequest]) (*connect.Response[catchyv1.GetChannelResponse], error) {
-	c, err := s.db.GetChannel(ctx, req.Msg.Name)
+func (s *Service) GetChannel(ctx context.Context, req *catchyv1.GetChannelRequest) (*catchyv1.GetChannelResponse, error) {
+	c, err := s.db.GetChannel(ctx, req.Name)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return connect.NewResponse(&catchyv1.GetChannelResponse{Channel: channelProto(c)}), nil
+	return &catchyv1.GetChannelResponse{Channel: channelProto(c)}, nil
 }
 
-func (s *Service) PauseChannel(ctx context.Context, req *connect.Request[catchyv1.PauseChannelRequest]) (*connect.Response[catchyv1.PauseChannelResponse], error) {
-	c, err := s.db.SetChannelPaused(ctx, req.Msg.Name, true)
+func (s *Service) PauseChannel(ctx context.Context, req *catchyv1.PauseChannelRequest) (*catchyv1.PauseChannelResponse, error) {
+	c, err := s.db.SetChannelPaused(ctx, req.Name, true)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return connect.NewResponse(&catchyv1.PauseChannelResponse{Channel: channelProto(c)}), nil
+	return &catchyv1.PauseChannelResponse{Channel: channelProto(c)}, nil
 }
 
-func (s *Service) ResumeChannel(ctx context.Context, req *connect.Request[catchyv1.ResumeChannelRequest]) (*connect.Response[catchyv1.ResumeChannelResponse], error) {
-	c, err := s.db.SetChannelPaused(ctx, req.Msg.Name, false)
+func (s *Service) ResumeChannel(ctx context.Context, req *catchyv1.ResumeChannelRequest) (*catchyv1.ResumeChannelResponse, error) {
+	c, err := s.db.SetChannelPaused(ctx, req.Name, false)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return connect.NewResponse(&catchyv1.ResumeChannelResponse{Channel: channelProto(c)}), nil
+	return &catchyv1.ResumeChannelResponse{Channel: channelProto(c)}, nil
 }
 
-func (s *Service) DeleteChannel(ctx context.Context, req *connect.Request[catchyv1.DeleteChannelRequest]) (*connect.Response[catchyv1.DeleteChannelResponse], error) {
-	if err := s.db.DeleteChannel(ctx, req.Msg.Name); err != nil {
+func (s *Service) DeleteChannel(ctx context.Context, req *catchyv1.DeleteChannelRequest) (*catchyv1.DeleteChannelResponse, error) {
+	if err := s.db.DeleteChannel(ctx, req.Name); err != nil {
 		return nil, dbError(err)
 	}
-	return connect.NewResponse(&catchyv1.DeleteChannelResponse{}), nil
+	return &catchyv1.DeleteChannelResponse{}, nil
 }
