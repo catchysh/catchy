@@ -172,10 +172,12 @@ func storedHeaders(h http.Header) map[string]string {
 }
 
 func (h *Handler) clientIP(r *http.Request) string {
+	// The proxy appends the address it saw, so only the last entry is its
+	// own; anything before it came from the client and may be forged.
 	if h.trustProxy {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			first, _, _ := strings.Cut(fwd, ",")
-			return strings.TrimSpace(first)
+			parts := strings.Split(fwd, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
