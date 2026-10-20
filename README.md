@@ -384,7 +384,7 @@ docker compose up
 | `ALLOWED_DOMAINS` | Comma-separated list of allowed email domains | — (all allowed) |
 | `AUTO_CREATE_CHANNELS` | Let a hook to an unknown channel create it; `false` answers such hooks with `404` | `true` |
 | `TICK_SECRET` | Bearer token `POST /tick` requires to send due attempts ([more](#handlers)) | — (open) |
-| `TRUST_PROXY` | Take the sender's IP from `X-Forwarded-For` (`true` only behind a proxy that sets it) | — |
+| `TRUST_PROXY` | Take the sender's IP from the last `X-Forwarded-For` entry, the one the proxy added (`true` only behind a proxy that sets it, e.g. Cloud Run) | — |
 | `CATCHY_VAR_*` | Variables for handler templates, as `{{.Vars.NAME}}` | — |
 | `CATCHY_SECRET_*` | [Secrets](#secrets) for handlers and guards, used by name: `CATCHY_SECRET_RESEND_API_KEY` is `RESEND_API_KEY` | — |
 

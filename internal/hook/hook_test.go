@@ -380,3 +380,28 @@ func TestAutoCreateOff(t *testing.T) {
 		t.Fatalf("known channel: status = %d", rec.Code)
 	}
 }
+
+func TestClientIP(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		trust bool
+		fwd   string
+		want  string
+	}{
+		{"untrusted ignores the header", false, "203.0.113.7", "192.0.2.1"},
+		{"trusted without the header", true, "", "192.0.2.1"},
+		{"trusted takes the proxy's entry", true, "203.0.113.7", "203.0.113.7"},
+		{"trusted ignores a forged prefix", true, "1.2.3.4, 203.0.113.7", "203.0.113.7"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/", nil)
+			req.RemoteAddr = "192.0.2.1:1234"
+			if c.fwd != "" {
+				req.Header.Set("X-Forwarded-For", c.fwd)
+			}
+			if got := (&Handler{trustProxy: c.trust}).clientIP(req); got != c.want {
+				t.Errorf("clientIP = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
